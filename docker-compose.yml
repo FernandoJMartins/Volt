@@ -1,0 +1,84 @@
+services:
+  # O banco usado é o Postgres LOCAL da maquina (ver DATABASE_URL no .env,
+  # apontando para host.docker.internal). Este servico ficou como alternativa:
+  # suba com `docker compose --profile db up -d` se quiser um Postgres em container.
+  postgres:
+    profiles: ["db"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ifpb
+      POSTGRES_DB: xpanel
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    env_file: .env
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # Chromium precisa de shm maior; o padrao de 64MB derruba o navegador.
+    shm_size: "1gb"
+    environment:
+      # Liga a tela virtual + noVNC para o login headed (ver entrypoint.sh).
+      ENABLE_LOGIN_DISPLAY: "1"
+      DISPLAY: ":99"
+      # Defina VNC_PASSWORD no .env para proteger o noVNC (recomendado).
+    volumes:
+      - ./backend:/srv
+      - media:/data/media
+      - sessions:/data/sessions
+    ports:
+      - "8000:8000"
+      # noVNC: acesse via tunel SSH em producao, nao exponha cru.
+      - "6080:6080"
+    depends_on:
+      redis: { condition: service_healthy }
+
+  worker:
+    build: ./backend
+    env_file: .env
+    command: arq app.workers.WorkerSettings
+    shm_size: "1gb"
+    volumes:
+      - ./backend:/srv
+      - media:/data/media
+      - sessions:/data/sessions
+    depends_on:
+      redis: { condition: service_healthy }
+
+  scheduler:
+    build: ./backend
+    env_file: .env
+    command: python -m app.scheduler
+    volumes:
+      - ./backend:/srv
+    depends_on:
+      redis: { condition: service_healthy }
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  media:
+  sessions:
