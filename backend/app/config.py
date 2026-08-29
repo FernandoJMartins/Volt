@@ -14,13 +14,13 @@ class Settings(BaseSettings):
 
     X_CLIENT_ID: str = ""
     X_CLIENT_SECRET: str = ""
-    X_CALLBACK_URL: str = "http://localhost:8000/api/x/accounts/callback"
+    X_CALLBACK_URL: str = "http://localhost:8010/api/x/accounts/callback"
 
     AI_ENABLED: bool = False
     ANTHROPIC_API_KEY: str = ""
     AI_MODEL: str = "claude-sonnet-5"
 
-    FRONTEND_URL: str = "http://localhost:5173"
+    FRONTEND_URL: str = "http://localhost:5180"
     STORAGE_DIR: str = "/data/media"
 
     # ---- Camada de navegador (Playwright) ----

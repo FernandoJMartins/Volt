@@ -24,8 +24,8 @@ Suba tudo:
 docker compose up --build
 ```
 
-- Painel: http://localhost:5173
-- API: http://localhost:8000/health
+- Painel: http://localhost:5180
+- API: http://localhost:8010/health
 
 Crie sua conta na tela de login (o primeiro acesso é um cadastro normal).
 
