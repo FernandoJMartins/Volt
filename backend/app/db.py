@@ -17,6 +17,16 @@ _ADD_COLUMNS = (
     "ALTER TABLE x_accounts ADD COLUMN IF NOT EXISTS user_agent VARCHAR(512) DEFAULT ''",
 )
 
+# Migracao de schema (idempotente): a UNIQUE global (user_id, x_user_id) explodia
+# quando uma 2a conta browser nascia com x_user_id='' (placeholder pre-login).
+# Troca por um indice unico PARCIAL, que so vale para x_user_id real.
+# Ordem importa: drop da constraint (leva junto o indice de mesmo nome) antes do create.
+_SCHEMA_MIGRATIONS = (
+    "ALTER TABLE x_accounts DROP CONSTRAINT IF EXISTS uq_user_xaccount",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_xaccount"
+    " ON x_accounts (user_id, x_user_id) WHERE x_user_id <> ''",
+)
+
 engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -37,4 +47,6 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         for statement in _ADD_COLUMNS:
+            await conn.execute(text(statement))
+        for statement in _SCHEMA_MIGRATIONS:
             await conn.execute(text(statement))

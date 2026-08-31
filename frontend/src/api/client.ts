@@ -10,7 +10,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     let message = `Erro ${res.status}`
     try {
       const body = await res.json()
-      message = body.detail ?? message
+      if (typeof body.detail === 'string') {
+        message = body.detail
+      } else if (Array.isArray(body.detail)) {
+        // FastAPI 422 devolve uma lista de objetos {msg, ...}.
+        message = body.detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join('; ')
+      }
     } catch {
       /* resposta sem corpo JSON */
     }
@@ -133,7 +138,16 @@ export const api = {
   stats: () => get<Stats>('/dashboard/stats'),
 
   xAccounts: () => get<XAccount[]>('/x/accounts'),
-  connectX: () => post<{ authorize_url: string }>('/x/accounts/connect'),
+  importCookies: (cookiesText: string) =>
+    post<{ account: XAccount; session_valid: boolean; username: string }>(
+      '/x/accounts/browser/import-cookies',
+      { cookies_text: cookiesText },
+    ),
+  importCookiesInto: (id: number, cookiesText: string) =>
+    post<{ account: XAccount; session_valid: boolean; username: string }>(
+      `/x/accounts/${id}/browser/cookies`,
+      { cookies_text: cookiesText },
+    ),
   updateXAccount: (id: number, body: Partial<XAccount>) => patch<XAccount>(`/x/accounts/${id}`, body),
   deleteXAccount: (id: number) => del(`/x/accounts/${id}`),
 

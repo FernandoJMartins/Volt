@@ -9,11 +9,9 @@ RUN pip install --no-cache-dir uv && uv pip install --system --no-cache -r pypro
 # Chromium + libs de sistema do Playwright (coleta/publicacao via navegador).
 RUN playwright install --with-deps chromium
 
-# Stack de tela virtual para o login headed em servidor sem monitor:
-# Xvfb (framebuffer) + x11vnc (VNC) + noVNC/websockify (VNC no navegador).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        xvfb x11vnc novnc websockify \
-    && rm -rf /var/lib/apt/lists/*
+# A pilha de tela virtual (Xvfb + x11vnc + noVNC) foi REMOVIDA na Fase 4:
+# o X bloqueia login a partir do IP do servidor, entao o login e' sempre
+# headless e a sessao entra por importacao de cookies (ver README).
 
 COPY . .
 RUN chmod +x entrypoint.sh

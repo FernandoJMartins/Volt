@@ -1,27 +1,31 @@
 """Contas do X conectadas.
 
 Dois metodos de autenticacao convivem:
-  - "browser": login headed uma vez, storage_state salvo criptografado (padrao).
+  - "browser": sessao por cookies importados do navegador do usuario
+    (exporte no navegador local e cole no painel — storage_state salvo
+    criptografado). Metodo padrao: o X bloqueia login pelo IP do servidor.
   - "oauth":   API 2.0 PKCE oficial (legado, mantido intacto).
 Nunca usuario+senha automatico.
 """
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.deps import current_user
 from app.core.security import encrypt
-from app.db import SessionLocal, get_db
+from app.db import get_db
 from app.models import AuditLog, User, XAccount
 from app.services import x_api, x_web
-from app.services.browser import manager as browser_manager
+from app.services.browser import manager as browser_manager, wrap_state
+from app.services.cookies import CookieImportError, has_auth_token, parse_cookie_dump
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/x/accounts", tags=["x-accounts"])
@@ -77,97 +81,164 @@ async def list_accounts(user: User = Depends(current_user), db: AsyncSession = D
     return [_serialize(a) for a in rows]
 
 
-# ---------------- Login via navegador (metodo padrao) ----------------
+# ---------------- Importacao de cookies (metodo padrao) ----------------
 
 
-async def _run_browser_login(account_id: int) -> None:
-    """Task de fundo: abre um navegador VISIVEL no contexto isolado desta conta,
-    espera o login manual (captcha/2FA na mao) e salva o storage_state.
+class CookieImportBody(BaseModel):
+    """Despejo de cookies colado pelo usuario. Nunca e' logado nem devolvido."""
 
-    Roda com sessao de banco propria — nao compartilha a da request.
+    cookies_text: str = Field(max_length=2_000_000)
+
+
+async def _import_cookies_into(
+    account: XAccount, cookies_text: str, db: AsyncSession
+) -> dict:
+    """Parseia, salva criptografado e valida a sessao no X (headless, rapido).
+
+    SUBSTITUI a sessao anterior da conta — importar cookies e' um re-login, nao um
+    merge. Se os cookies estiverem mortos, a conta fica com session_valid=False
+    (mesmo que antes estivesse valida).
+
+    Levanta CookieImportError (vira 400) antes de qualquer efeito colateral.
     """
-    async with SessionLocal() as db:
-        account = await db.get(XAccount, account_id)
-        if account is None:
-            return
-        try:
-            async with browser_manager.session(account, headed=True) as (page, _ctx):
-                ok = await x_web.wait_until_logged_in(page, settings.LOGIN_TIMEOUT_SECONDS)
-                if ok:
-                    identity = await x_web.resolve_identity(page)
-                    if identity.get("username"):
-                        account.username = identity["username"]
-            # session() ja gravou o storage_state atualizado em account.*
-            account.session_valid = ok
-            if ok:
-                db.add(
-                    AuditLog(
-                        user_id=account.user_id,
-                        action="x_account.browser_login",
-                        entity="x_account",
-                        entity_id=str(account.id),
-                        detail={"username": account.username},
-                    )
+    state = parse_cookie_dump(cookies_text)
+    if not has_auth_token(state):
+        log.warning(
+            "Conta %s: importacao sem cookie auth_token (sessao provavelmente nao vale)",
+            account.id,
+        )
+
+    account.session_state_encrypted = wrap_state(account.id, state)
+    account.session_updated_at = datetime.now(timezone.utc)
+
+    # Valida de verdade: abre o contexto SEMEADO com os cookies importados e
+    # confere identidade no proprio x.com. Tudo com timeout fechado — importacao
+    # nunca pode pendurar a request indefinidamente.
+    valid = False
+    identity: dict = {}
+    try:
+        async with browser_manager.session(account) as (page, _ctx):
+            try:
+                await page.goto(
+                    f"{x_web.BASE}/home", wait_until="domcontentloaded", timeout=20_000
                 )
-            await db.commit()
-            log.info("Login navegador conta %s: %s", account_id, "ok" if ok else "timeout")
-        except Exception:  # noqa: BLE001
-            log.exception("Falha no login por navegador da conta %s", account_id)
-            account.session_valid = False
-            await db.commit()
+            except Exception:  # noqa: BLE001
+                pass  # mesmo sem carregar a home, o cookie pode existir e valer
+            valid = await x_web.is_logged_in(page)
+            if "/login" in page.url:
+                # X redireciona deslogados de /home para /login: cookie presente
+                # mas morto. Nao marque a sessao como valida nesse caso.
+                valid = False
+            if valid:
+                try:
+                    identity = await asyncio.wait_for(x_web.resolve_identity(page), timeout=30)
+                except Exception:  # noqa: BLE001
+                    identity = {}
+    except Exception:  # noqa: BLE001
+        log.exception("Falha ao validar cookies importados da conta %s", account.id)
+        valid = False
 
+    account.session_valid = valid
+    if identity and identity.get("username"):
+        account.username = identity["username"]
+    if identity and identity.get("x_user_id"):
+        # Unicidade parcial (user_id, x_user_id): se o id resolvido ja pertence a
+        # outra conta do mesmo usuario, mantem o placeholder em vez de explodir.
+        dup = await db.execute(
+            select(XAccount.id).where(
+                XAccount.user_id == account.user_id,
+                XAccount.x_user_id == identity["x_user_id"],
+                XAccount.id != account.id,
+            )
+        )
+        if dup.first() is None:
+            account.x_user_id = identity["x_user_id"]
+        else:
+            log.warning(
+                "Conta %s: identidade %s ja pertence a outra conta do usuario; "
+                "x_user_id mantido",
+                account.id,
+                identity["x_user_id"],
+            )
 
-@router.post("/browser/login")
-async def browser_login(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    """Cria uma conta em modo navegador e dispara o login headed em background.
-
-    Abre uma janela do Chromium NA MAQUINA que roda o worker/API — logue nela e o
-    sistema captura a sessao. Consulte o progresso em GET /browser/{id}/status.
-    """
-    account = XAccount(
-        user_id=user.id,
-        x_user_id="",
-        username="(login pendente)",
-        auth_method="browser",
-        session_valid=False,
+    db.add(
+        AuditLog(
+            user_id=account.user_id,
+            action="x_account.cookies_import",
+            entity="x_account",
+            entity_id=str(account.id),
+            detail={"username": account.username, "session_valid": valid},
+        )
     )
-    db.add(account)
     await db.commit()
-    asyncio.create_task(_run_browser_login(account.id))
-    return {
-        "account_id": account.id,
-        "status": "waiting_login",
-        "connected": False,
-        # Abra esta URL, logue no X na janela do servidor; a sessao e' capturada.
-        "vnc_url": settings.NOVNC_URL,
-    }
+    log.info("Cookies importados conta %s: %s", account.id, "valida" if valid else "invalida")
+    return {"session_valid": valid, "username": account.username}
 
 
-@router.get("/browser/{account_id}/status")
-async def browser_login_status(
-    account_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+@router.post("/browser/import-cookies")
+async def browser_import_cookies(
+    body: CookieImportBody, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
 ):
+    """Importa cookies exportados do navegador LOCAL do usuario.
+
+    Quando o X bloqueia o login pelo IP do servidor (datacenter), exporte os
+    cookies estando logado no X na SUA maquina (extensao "Get cookies.txt
+    LOCALLY" ou equivalente) e cole aqui. Sem noVNC, sem login manual.
+
+    Reutiliza a conta browser pendente do usuario, se houver; senao cria uma.
+    """
+    account = (
+        await db.execute(
+            select(XAccount).where(
+                XAccount.user_id == user.id,
+                XAccount.auth_method == "browser",
+                XAccount.x_user_id == "",
+            )
+        )
+    ).scalars().first()
+
+    if account is None:
+        account = XAccount(
+            user_id=user.id,
+            x_user_id="",
+            username="(login pendente)",
+            auth_method="browser",
+            session_valid=False,
+        )
+        db.add(account)
+        await db.commit()
+
+    try:
+        result = await _import_cookies_into(account, body.cookies_text, db)
+    except CookieImportError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    return {**result, "account": _serialize(account)}
+
+
+@router.post("/{account_id}/browser/cookies")
+async def browser_import_cookies_into(
+    account_id: int,
+    body: CookieImportBody,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Importa cookies numa conta existente (sessao expirada, metodo trocado, etc.).
+
+    Substitui a sessao da conta pela sessao dos cookies importados; a conta passa
+    a usar o metodo "browser" (os tokens OAuth, se houver, ficam intactos).
+    """
     acc = await db.get(XAccount, account_id)
     if not acc or acc.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta nao encontrada")
-    return {
-        "account_id": acc.id,
-        "username": acc.username,
-        "session_valid": acc.session_valid,
-        "status": "connected" if acc.session_valid else "waiting_login",
-    }
 
+    try:
+        result = await _import_cookies_into(acc, body.cookies_text, db)
+    except CookieImportError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
 
-@router.post("/{account_id}/browser/relogin")
-async def browser_relogin(
-    account_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
-):
-    """Refaz o login de uma conta cuja sessao expirou, no MESMO contexto isolado."""
-    acc = await db.get(XAccount, account_id)
-    if not acc or acc.user_id != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta nao encontrada")
-    asyncio.create_task(_run_browser_login(acc.id))
-    return {"account_id": acc.id, "status": "waiting_login", "vnc_url": settings.NOVNC_URL}
+    acc.auth_method = "browser"
+    await db.commit()
+    return {**result, "account": _serialize(acc)}
 
 
 @router.post("/connect")

@@ -29,13 +29,9 @@ services:
     build: ./backend
     env_file: .env
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
     # Chromium precisa de shm maior; o padrao de 64MB derruba o navegador.
     shm_size: "1gb"
-    environment:
-      # Liga a tela virtual + noVNC para o login headed (ver entrypoint.sh).
-      ENABLE_LOGIN_DISPLAY: "1"
-      DISPLAY: ":99"
-      # Defina VNC_PASSWORD no .env para proteger o noVNC (recomendado).
     volumes:
       - ./backend:/srv
       - media:/data/media
@@ -43,8 +39,9 @@ services:
     ports:
       # host 8010 -> container 8000 (8000 estava ocupado na maquina)
       - "8010:8000"
-      # noVNC: acesse via tunel SSH em producao, nao exponha cru.
-      - "6080:6080"
+    # Linux nao resolve host.docker.internal por padrao (isso e coisa do Docker Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       redis: { condition: service_healthy }
 
@@ -57,6 +54,8 @@ services:
       - ./backend:/srv
       - media:/data/media
       - sessions:/data/sessions
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       redis: { condition: service_healthy }
 
@@ -64,8 +63,11 @@ services:
     build: ./backend
     env_file: .env
     command: python -m app.scheduler
+    restart: unless-stopped
     volumes:
       - ./backend:/srv
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       redis: { condition: service_healthy }
 

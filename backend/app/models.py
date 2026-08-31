@@ -6,10 +6,11 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
-    UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -74,7 +75,19 @@ class XAccount(Base):
 
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
-    __table_args__ = (UniqueConstraint("user_id", "x_user_id", name="uq_user_xaccount"),)
+    # Unicidade PARCIAL: so vale quando ha x_user_id real (conta conectada).
+    # Contas em modo navegador nascem com x_user_id='' (placeholder ate o login
+    # resolver a identidade) e a UNIQUE global antiga explodia na 2a tentativa
+    # de login do mesmo usuario (duplicate key em (user_id, '')).
+    __table_args__ = (
+        Index(
+            "uq_user_xaccount",
+            "user_id",
+            "x_user_id",
+            unique=True,
+            postgresql_where=text("x_user_id <> ''"),
+        ),
+    )
 
 
 class MonitoredAccount(Base):

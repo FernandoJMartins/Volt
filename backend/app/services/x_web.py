@@ -43,38 +43,69 @@ async def is_logged_in(page: Page) -> bool:
     return any(c["name"] == "auth_token" and c["value"] for c in cookies)
 
 
-async def wait_until_logged_in(page: Page, timeout_seconds: int) -> bool:
-    """Abre a tela de login e espera o usuario logar na mao (captcha/2FA inclusos)."""
-    await page.goto(f"{BASE}/login", wait_until="domcontentloaded")
-    deadline = asyncio.get_event_loop().time() + timeout_seconds
-    while asyncio.get_event_loop().time() < deadline:
-        if await is_logged_in(page):
-            # Garante que a home carregou antes de salvar o estado.
-            try:
-                await page.goto(f"{BASE}/home", wait_until="domcontentloaded")
-            except PWTimeout:
-                pass
-            return True
-        await asyncio.sleep(2)
-    return False
-
-
 async def resolve_identity(page: Page) -> dict:
-    """Le @username e nome de exibicao da conta logada, via API interna do proprio site."""
+    """Le @username e o id numerico da conta logada, via API interna do proprio site.
+
+    Prefere verify_credentials (tem id_str + screen_name); cai para settings.json
+    (so username) se a primeira falhar.
+    """
+    result: dict | None = None
     try:
         result = await page.evaluate(
             """async () => {
-                const r = await fetch('/i/api/1.1/account/settings.json', {
+                const r = await fetch('/i/api/1.1/account/verify_credentials.json', {
                     headers: {'x-twitter-active-user': 'yes'},
                     credentials: 'include',
                 });
                 if (!r.ok) return null;
                 const j = await r.json();
-                return { username: j.screen_name || '' };
+                return { username: j.screen_name || '', x_user_id: String(j.id_str || '') };
             }"""
         )
     except Exception:  # noqa: BLE001
         result = None
+
+    if not result or not result.get("username"):
+        try:
+            result = await page.evaluate(
+                """async () => {
+                    const r = await fetch('/i/api/1.1/account/settings.json', {
+                        headers: {'x-twitter-active-user': 'yes'},
+                        credentials: 'include',
+                    });
+                    if (!r.ok) return null;
+                    const j = await r.json();
+                    return { username: j.screen_name || '' };
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            result = None
+
+    if not result or not result.get("username"):
+        # Plano B sem API interna: o link do proprio perfil na barra de navegacao
+        # (data-testid="AppTabBar_Profile_Link") aponta para /<username>. Funciona
+        # mesmo quando verify_credentials/settings.json respondem 403 (IP datacenter).
+        # Espera o app renderizar a barra antes de ler — logo apos domcontentloaded
+        # o DOM ainda nao tem o link (corrida real vista em producao).
+        try:
+            await page.wait_for_selector(
+                'a[data-testid="AppTabBar_Profile_Link"]', timeout=8_000
+            )
+            username = await page.evaluate(
+                """() => {
+                    const el = document.querySelector(
+                        'a[data-testid="AppTabBar_Profile_Link"]'
+                    );
+                    const href = el && el.getAttribute('href');
+                    if (!href) return null;
+                    const name = href.split('/').filter(Boolean).pop();
+                    return name || null;
+                }"""
+            )
+            if username:
+                result = {"username": username}
+        except Exception:  # noqa: BLE001
+            pass
     return result or {}
 
 
@@ -95,6 +126,48 @@ def _parse_count(label: str | None) -> int:
     return int(value)
 
 
+def dedup_media_urls(urls: list[str], limit: int = 4) -> list[str]:
+    """Remove duplicatas da MESMA midia (mesmo path sem querystring), preservando
+    a ordem e limitando a quantidade. Logica pura — testavel sem navegador."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in urls:
+        key = url.split("?")[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def _extract_media_urls(article) -> dict:
+    """Urls de midia do post: imagens (ate 4) e poster do video.
+
+    O X serve a mesma imagem em varias resolucoes via query — deduplicamos pela
+    url base. Video em si (MSE/blob) nao da' para baixar de forma estavel; o
+    poster (thumbnail) representa a midia visual do video.
+    """
+    images: list[str] = []
+    for img in await article.query_selector_all("img"):
+        src = (await img.get_attribute("src")) or ""
+        if "twimg.com" not in src or "/media/" not in src:
+            continue
+        # Normaliza para resolucao media (o DOM entrega name=small por padrao).
+        images.append(f"{src.split('?')[0]}?format=jpg&name=medium")
+    images = dedup_media_urls(images, limit=4)
+
+    poster = ""
+    video = await article.query_selector(SEL["video"])
+    if video:
+        poster = (await video.get_attribute("poster")) or ""
+        if poster and "twimg.com" in poster:
+            images.append(poster)
+            images = dedup_media_urls(images, limit=4)
+    return {"images": images, "video_poster": poster}
+
+
 async def _extract_tweet(article) -> dict | None:
     """Extrai um post do DOM. Retorna None se nao der pra identificar o id."""
     link = await article.query_selector(SEL["status_link"])
@@ -113,6 +186,7 @@ async def _extract_tweet(article) -> dict | None:
 
     has_photo = await article.query_selector(SEL["photo"]) is not None
     has_video = await article.query_selector(SEL["video"]) is not None
+    media = await _extract_media_urls(article)
 
     time_el = await article.query_selector("time")
     dt_attr = await time_el.get_attribute("datetime") if time_el else None
@@ -126,7 +200,12 @@ async def _extract_tweet(article) -> dict | None:
         "views": 0,  # views nao vem de forma estavel no DOM; fica 0 nesta camada
         "has_media": has_photo or has_video,
         "posted_at": _parse_iso(dt_attr),
-        "media_metadata": {"photo": has_photo, "video": has_video},
+        "media_metadata": {
+            "photo": has_photo,
+            "video": has_video,
+            "images": media["images"],
+            "video_poster": media["video_poster"],
+        },
     }
 
 

@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { api, type XAccount } from '../api/client'
-import { IconPlus } from '../components/Icons'
 import { Avatar, Empty, ErrorBanner, Loading, Modal, Pill, TopBar } from '../components/ui'
 
 export default function Accounts() {
@@ -10,6 +9,9 @@ export default function Accounts() {
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<XAccount | null>(null)
   const [form, setForm] = useState<Partial<XAccount>>({})
+  const [importing, setImporting] = useState<{ accountId: number | null } | null>(null)
+  const [cookiesText, setCookiesText] = useState('')
+  const [importBusy, setImportBusy] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -29,12 +31,33 @@ export default function Accounts() {
     load()
   }, [])
 
-  async function connect() {
+  /** Importa cookies exportados do navegador LOCAL do usuario — metodo padrao
+      de conexao, porque o X bloqueia login a partir do IP do servidor. O backend
+      valida a sessao abrindo o x.com headless com os cookies recem-importados. */
+  async function submitImport() {
+    if (!importing || !cookiesText.trim()) return
+    setImportBusy(true)
+    setError('')
     try {
-      const { authorize_url } = await api.connectX()
-      window.location.href = authorize_url
+      const res =
+        importing.accountId == null
+          ? await api.importCookies(cookiesText)
+          : await api.importCookiesInto(importing.accountId, cookiesText)
+      setImporting(null)
+      setCookiesText('')
+      if (res.session_valid) {
+        setNotice(`Sessão de @${res.username || res.account.username} importada e validada.`)
+      } else {
+        setError(
+          'Cookies salvos, mas o X não validou a sessão (cookies expirados?). ' +
+            'Exporte de novo estando logado no X e tente outra vez.',
+        )
+      }
+      load()
     } catch (err) {
       setError((err as Error).message)
+    } finally {
+      setImportBusy(false)
     }
   }
 
@@ -52,8 +75,15 @@ export default function Accounts() {
   return (
     <>
       <TopBar title="Contas">
-        <button className="btn sm" onClick={connect}>
-          <IconPlus size={18} /> Conectar
+        <button
+          className="btn sm"
+          title="Cole os cookies exportados do seu navegador"
+          onClick={() => {
+            setImporting({ accountId: null })
+            setCookiesText('')
+          }}
+        >
+          Importar cookies
         </button>
       </TopBar>
 
@@ -61,8 +91,9 @@ export default function Accounts() {
       {notice && <div className="banner info">{notice}</div>}
 
       <div className="banner">
-        A conexão usa OAuth oficial do X. Nunca guardamos sua senha, e os tokens ficam
-        criptografados — não são exibidos aqui nem enviados ao navegador.
+        Conecte suas contas importando os <b>cookies do X</b> exportados do navegador da sua
+        máquina (extensão "Get cookies.txt LOCALLY", só o site x.com). A sessão fica salva
+        criptografada e o painel não usa a API oficial (paga). Nunca guardamos sua senha.
       </div>
 
       {loading ? (
@@ -191,6 +222,16 @@ export default function Accounts() {
 
           <div className="row" style={{ marginTop: 20, gap: 8 }}>
             <button
+              className="btn ghost sm"
+              onClick={() => {
+                setEditing(null)
+                setImporting({ accountId: editing.id })
+                setCookiesText('')
+              }}
+            >
+              Importar cookies
+            </button>
+            <button
               className="btn danger sm"
               onClick={async () => {
                 await api.deleteXAccount(editing.id)
@@ -202,6 +243,69 @@ export default function Accounts() {
             </button>
             <button className="btn" style={{ marginLeft: 'auto' }} onClick={save}>
               Salvar
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {importing && (
+        <Modal
+          title={importing.accountId == null ? 'Importar cookies' : 'Importar cookies nesta conta'}
+          onClose={() => {
+            setImporting(null)
+            setCookiesText('')
+          }}
+        >
+          <div className="banner info">
+            Exporte os cookies do X no navegador <b>da sua máquina</b> — estando logado na
+            conta — com a extensão &quot;Get cookies.txt LOCALLY&quot; (ou equivalente) e cole
+            aqui. Na extensão, escolha exportar <b>só o site x.com</b> (não &quot;all
+            cookies&quot;). Aceita cookies.txt (Netscape), lista JSON ou storage_state do
+            Playwright. Funciona mesmo quando o X bloqueia o login pelo IP do servidor.
+          </div>
+          <textarea
+            className="textarea"
+            style={{ marginTop: 12, minHeight: 180, fontFamily: 'monospace', fontSize: 12 }}
+            placeholder={
+              '# Netscape HTTP Cookie File\n.x.com\tTRUE\t/\tTRUE\t1777777777\tauth_token\t...'
+            }
+            value={cookiesText}
+            onChange={(e) => setCookiesText(e.target.value)}
+          />
+          <p className="small muted" style={{ marginTop: 8, marginBottom: 0 }}>
+            Não importa se o arquivo tem milhares de linhas: só os cookies de
+            x.com/twitter.com são aproveitados; o resto é descartado. Ficam criptografados
+            no servidor e nunca mais aparecem nesta tela.
+          </p>
+          <div className="row" style={{ marginTop: 10, gap: 8 }}>
+            <label className="btn ghost sm" style={{ cursor: 'pointer' }}>
+              Escolher arquivo .txt/.json
+              <input
+                type="file"
+                accept=".txt,.json,text/plain,application/json"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (!file) return
+                  const reader = new FileReader()
+                  reader.onload = () => setCookiesText(String(reader.result ?? ''))
+                  reader.onerror = () =>
+                    setError('Não consegui ler o arquivo. Cole o conteúdo no campo acima.')
+                  reader.readAsText(file)
+                }}
+              />
+            </label>
+            <span className="small muted" style={{ alignSelf: 'center' }}>
+              ou cole o conteúdo no campo acima
+            </span>
+          </div>
+          <div className="row" style={{ marginTop: 16, gap: 8 }}>
+            <button
+              className="btn"
+              disabled={importBusy || !cookiesText.trim()}
+              onClick={submitImport}
+            >
+              {importBusy ? 'Importando e validando…' : 'Importar e validar'}
             </button>
           </div>
         </Modal>

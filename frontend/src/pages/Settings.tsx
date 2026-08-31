@@ -55,12 +55,13 @@ export default function Settings() {
 
       <div className="card">
         <div className="bold" style={{ marginBottom: 8 }}>
-          Custo da API do X
+          Como o Volt publica
         </div>
         <p className="small muted" style={{ margin: 0 }}>
-          Desde fev/2026 o X cobra por uso: ~US$0,005 por post lido e ~US$0,015 por post publicado
-          (US$0,20 se contiver link). Por isso o MVP usa o pool manual de textos como fonte padrão —
-          leitura via API só quando você definir um orçamento.
+          O painel <b>não usa a API oficial do X</b> (paga por post). A publicação e a coleta
+          rodam num navegador no servidor, com a sessão da sua conta (importada por cookies) —
+          cada conta num contexto isolado. A IA de geração de ângulos é opcional e custa
+          centavos por uso (billing próprio).
         </p>
       </div>
 
@@ -73,7 +74,7 @@ export default function Settings() {
           <li>Aprovação humana obrigatória antes de agendar</li>
           <li>Limite de frequência por conta (anti-spam)</li>
           <li>Rate limit do X sempre respeitado — nunca contornado</li>
-          <li>Somente API oficial, sem automação de navegador</li>
+          <li>Automação de navegador com sessão isolada por conta (sem API oficial)</li>
           <li>Tokens criptografados em repouso</li>
         </ul>
       </div>

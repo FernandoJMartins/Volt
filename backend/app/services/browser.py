@@ -116,8 +116,8 @@ class BrowserManager:
             return lock
 
     @asynccontextmanager
-    async def session(self, account, *, headed: bool | None = None):
-        """Contexto isolado para UMA conta.
+    async def session(self, account):
+        """Contexto isolado para UMA conta (sempre headless — sem login manual).
 
         Uso:
             async with manager.session(account) as (page, ctx):
@@ -134,15 +134,13 @@ class BrowserManager:
 
             own_browser: Browser | None = None
             process_mode = settings.BROWSER_ISOLATION == "process"
-            want_headed = (not settings.BROWSER_HEADLESS) if headed is None else headed
 
-            if process_mode or want_headed:
-                # Login headed e modo 'process' exigem um Browser dedicado, porque o
-                # headless do Browser compartilhado nao pode ser sobrescrito por contexto.
+            if process_mode:
+                # Modo 'process' exige um Browser dedicado por conta (isolamento maximo).
                 if self._pw is None:
                     self._pw = await async_playwright().start()
                 own_browser = await self._pw.chromium.launch(
-                    headless=not want_headed,
+                    headless=settings.BROWSER_HEADLESS,
                     args=["--no-sandbox", "--disable-dev-shm-usage"],
                 )
                 browser = own_browser

@@ -36,11 +36,6 @@ class Settings(BaseSettings):
     # storage isolada) ou "process" (1 processo de navegador por conta, isolamento
     # maximo ao custo de mais RAM). Nunca ha duas contas no mesmo contexto.
     BROWSER_ISOLATION: str = "context"
-    # Segundos que o navegador headed espera o login manual (captcha/2FA na mao).
-    LOGIN_TIMEOUT_SECONDS: int = 300
-    # URL do noVNC onde o usuario ve o navegador do servidor para logar.
-    # Em producao, sirva atras de HTTPS/tunel SSH — nao exponha a porta crua.
-    NOVNC_URL: str = "http://localhost:6080/vnc.html"
     # User-Agent fixo por conta evita variacao suspeita entre sessoes da mesma conta.
     BROWSER_LOCALE: str = "pt-BR"
 
