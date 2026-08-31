@@ -20,6 +20,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -60,6 +61,7 @@ services:
     build: ./backend
     env_file: .env
     command: arq app.workers.WorkerSettings
+    restart: unless-stopped
     shm_size: "1gb"
     volumes:
       - ./backend:/srv
@@ -84,6 +86,7 @@ services:
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
     ports:
       # host 5180 -> container 5173 (5173 estava ocupado na maquina)
       - "5180:5173"
