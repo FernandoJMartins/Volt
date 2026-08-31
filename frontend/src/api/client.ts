@@ -68,6 +68,7 @@ export type SourcePost = {
   original_url: string
   score: number
   score_breakdown: Record<string, number>
+  media: PostMedia[]
 }
 
 export type PostMedia = { id: number; kind: string; url: string; filename: string }
@@ -153,8 +154,10 @@ export const api = {
 
   sourcePosts: (order: 'score' | 'recent' = 'score') =>
     get<SourcePost[]>(`/source-posts?order=${order}`),
+  sourcePost: (id: number) => get<SourcePost>(`/source-posts/${id}`),
 
   aiStatus: () => get<{ available: boolean; model: string | null }>('/content/ai-status'),
+  sourcePostMedia: (id: number) => get<MediaAsset[]>(`/content/posts/${id}/media`),
   generate: (body: {
     target_x_account_id: number
     source_post_id?: number | null

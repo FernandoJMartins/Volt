@@ -75,8 +75,13 @@ Desde fev/2026 a API do X é **pay-per-use**:
 Com **R$20/mês** você tem ~740 leituras — insuficiente para monitoramento ao vivo. Por isso a
 fonte padrão é o pool manual, e o `XApiProvider` só entra quando você definir orçamento.
 
-**IA**: o plano Claude Pro **não** inclui API. Precisa de `ANTHROPIC_API_KEY` com billing
-próprio — mas o custo é irrisório (centavos por geração). A IA é sempre opcional.
+**IA**: o padrão é **Ollama local** (`AI_PROVIDER=ollama`, serviço `ollama` no compose) —
+gratuita, sem key, nada sai da máquina. O modelo padrão é
+`huihui_ai/llama3.2-abliterate:3b` (versão sem censura, para conteúdo +18);
+para trocar, basta mudar `OLLAMA_MODEL` no `.env` (o Ollama baixa o modelo na
+primeira geração). O provedor pago (`AI_PROVIDER=anthropic`) continua no código
+se um dia fizer sentido — mas **não é necessário** e nunca é selecionado por
+padrão. A IA é sempre opcional.
 
 ## Arquitetura
 

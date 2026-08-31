@@ -24,7 +24,7 @@ from app.models import (
     SourcePost,
     XAccount,
 )
-from app.services import scoring, sources, x_api, x_web
+from app.services import media_source, scoring, sources, x_api, x_web
 from app.services.browser import SessionExpired, manager as browser_manager
 from app.services.dedup import content_hash
 from app.services.storage import storage
@@ -103,25 +103,34 @@ async def collect_account(ctx, account_id: int) -> dict:
                 posted_at=item["posted_at"],
                 baseline=account.engagement_baseline,
             )
-            db.add(
-                SourcePost(
-                    x_post_id=item["x_post_id"],
-                    monitored_account_id=account.id,
-                    user_id=account.user_id,
-                    text=item["text"],
-                    author_username=item["author_username"],
-                    posted_at=item["posted_at"],
-                    likes=item["likes"],
-                    reposts=item["reposts"],
-                    replies=item["replies"],
-                    views=item["views"],
-                    has_media=item["has_media"],
-                    original_url=item["original_url"],
-                    content_hash=content_hash(item["text"]),
-                    score=score,
-                    score_breakdown=breakdown,
-                )
+            post = SourcePost(
+                x_post_id=item["x_post_id"],
+                monitored_account_id=account.id,
+                user_id=account.user_id,
+                text=item["text"],
+                author_username=item["author_username"],
+                posted_at=item["posted_at"],
+                likes=item["likes"],
+                reposts=item["reposts"],
+                replies=item["replies"],
+                views=item["views"],
+                has_media=item["has_media"],
+                original_url=item["original_url"],
+                content_hash=content_hash(item["text"]),
+                score=score,
+                score_breakdown=breakdown,
             )
+            db.add(post)
+            await db.flush()
+            # Midia do proprio tweet: baixa, tira metadados e liga ao post.
+            if item.get("media_entities"):
+                asset_ids = await media_source.import_post_media(
+                    db, account.user_id, item["media_entities"]
+                )
+                post.media_metadata = {
+                    **item.get("media_metadata", {}),
+                    "assets": asset_ids,
+                }
             account.engagement_baseline = scoring.update_baseline(account.engagement_baseline, rate)
             if not item["x_post_id"].startswith("manual:"):
                 account.last_seen_post_id = max(account.last_seen_post_id or "", item["x_post_id"])
@@ -174,11 +183,7 @@ async def _upload_candidate_media(db, candidate_id: int, access_token: str) -> l
 
 
 async def _candidate_media_paths(db, candidate_id: int) -> list[str]:
-    """Caminhos locais das midias publicaveis, na ordem definida pelo usuario.
-
-    Midia de terceiro (origin='source_reference') e' descartada aqui tambem —
-    mesma trava do caminho da API.
-    """
+    """Caminhos locais das midias publicaveis, na ordem definida pelo usuario."""
     links = (
         await db.execute(
             select(CandidateMedia)

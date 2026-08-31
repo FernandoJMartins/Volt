@@ -1,25 +1,34 @@
 """Geracao de angulos com IA — OPCIONAL.
 
-O app funciona 100% sem IA. Se AI_ENABLED=false ou faltar a key, `available()`
-retorna False e a UI simplesmente nao oferece o botao.
+O app funciona 100% sem IA. Se AI_ENABLED=false ou o provider escolhido
+nao estiver configurado, `available()` retorna False e a UI nao oferece o botao.
+
+Provider padrao: Ollama (local, gratuita). Anthropic so entra se
+AI_PROVIDER=anthropic for definido explicitamente.
 """
 
 import json
 import re
 from abc import ABC, abstractmethod
 
+import httpx
+
 from app.config import settings
 
-SYSTEM = """Voce reescreve conteudo para o X (Twitter) em portugues do Brasil.
+SYSTEM = """Voce reescreve conteudo para o X (Twitter) em portugues do Brasil, para perfis +18.
 
-Nunca copie o texto original. Analise assunto, contexto, estrutura, tom e intencao,
-e entao produza angulos NOVOS sobre o mesmo tema.
+O tom e SAFADO e PROVOCANTE: linguagem picante, insinuacoes, duplo sentido,
+vocabulario explicito quando o tema pedir. Nada de tom moralista, pudico ou
+conselho de relacionamento — o objetivo e excitar e entreter, nao educar.
+Nunca copie o texto original. Analise assunto, contexto e intencao, e entao
+produza angulos NOVOS sobre o mesmo tema.
 
 Regras:
 - Cada angulo deve ser autossuficiente e publicavel como esta.
 - Maximo 260 caracteres por angulo.
 - Angulos devem ser distintos entre si (abordagens diferentes, nao variacoes da mesma frase).
 - Sem hashtags, sem emoji excessivo, sem aspas envolvendo o texto.
+- Conteudo adulto consensual: sem menores de idade, sem violencia real.
 - Responda APENAS com um array JSON de strings. Nada alem do JSON."""
 
 
@@ -31,10 +40,69 @@ class AIProvider(ABC):
     @abstractmethod
     def available(self) -> bool: ...
 
+    @property
+    @abstractmethod
+    def model_name(self) -> str: ...
+
+
+class OllamaProvider(AIProvider):
+    """IA local gratuita via Ollama — nenhuma key externa, nada sai da maquina."""
+
+    def available(self) -> bool:
+        return bool(settings.AI_ENABLED and settings.AI_PROVIDER == "ollama")
+
+    @property
+    def model_name(self) -> str:
+        return settings.OLLAMA_MODEL
+
+    async def generate_angles(self, source_text: str, persona: str, n: int = 3):
+        persona_block = persona.strip() or "Tom neutro, direto, linguagem brasileira."
+        prompt = (
+            f"PERSONALIDADE DA CONTA DESTINO:\n{persona_block}\n\n"
+            f"POST ORIGINAL (apenas referencia, NAO copie):\n{source_text}\n\n"
+            f"Gere {n} angulos novos."
+        )
+        # Sem `format: json`: no llama3.2:3b o grammar forcado confunde e o modelo
+        # devolve lixo. O exemplo explicito de saida funciona melhor; _parse_angles
+        # cobre os desvios.
+        task = (
+            SYSTEM
+            + '\n\nResponda so com um array JSON de strings, sem nenhum outro texto. '
+            'Exemplo: ["Amiga pediu pra entrar na brincadeira e saiu querendo o lugar dela", '
+            '"Ciume? Aqui a gente divide tudo — inclusive a vontade"]'
+        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/generate",
+                json={
+                    "model": settings.OLLAMA_MODEL,
+                    "prompt": task + "\n\n" + prompt,
+                    "stream": False,
+                    # 3B em CPU pode levar ~1 min; 512 tokens e folga larga.
+                    "options": {"num_predict": 512, "temperature": 0.9},
+                },
+                timeout=httpx.Timeout(600.0, connect=10.0),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        text = data.get("response", "") or ""
+        usage = {
+            "model": settings.OLLAMA_MODEL,
+            "tokens_input": data.get("prompt_eval_count"),
+            "tokens_output": data.get("eval_count"),
+            "prompt": prompt,
+            "raw": text,
+        }
+        return _parse_angles(text, n), usage
+
 
 class AnthropicProvider(AIProvider):
     def available(self) -> bool:
-        return bool(settings.AI_ENABLED and settings.ANTHROPIC_API_KEY)
+        return bool(settings.AI_ENABLED and settings.AI_PROVIDER == "anthropic" and settings.ANTHROPIC_API_KEY)
+
+    @property
+    def model_name(self) -> str:
+        return settings.AI_MODEL
 
     async def generate_angles(self, source_text: str, persona: str, n: int = 3):
         from anthropic import AsyncAnthropic
@@ -78,4 +146,4 @@ def _parse_angles(text: str, n: int) -> list[str]:
     return [ln for ln in lines if ln][:n]
 
 
-provider: AIProvider = AnthropicProvider()
+provider: AIProvider = OllamaProvider() if settings.AI_PROVIDER != "anthropic" else AnthropicProvider()

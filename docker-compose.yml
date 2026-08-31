@@ -25,10 +25,20 @@ services:
       interval: 5s
       retries: 10
 
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
   api:
     build: ./backend
     env_file: .env
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # host.docker.internal -> Postgres local da maquina (nao resolve sozinho no Linux)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Chromium precisa de shm maior; o padrao de 64MB derruba o navegador.
     shm_size: "1gb"
     environment:
@@ -52,6 +62,8 @@ services:
     build: ./backend
     env_file: .env
     command: arq app.workers.WorkerSettings
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     shm_size: "1gb"
     volumes:
       - ./backend:/srv
@@ -64,6 +76,8 @@ services:
     build: ./backend
     env_file: .env
     command: python -m app.scheduler
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./backend:/srv
     depends_on:
@@ -84,3 +98,4 @@ volumes:
   pgdata:
   media:
   sessions:
+  ollama:
