@@ -56,5 +56,9 @@ class Settings(BaseSettings):
     MAX_POSTS_PER_DAY: int = 24
     MIN_INTERVAL_MINUTES: int = 15
 
+    # Analytics (Fase 5): intervalo da varredura periodica de engajamento dos
+    # posts publicados (uma navegacao por conta browser conectada).
+    ANALYTICS_SWEEP_SECONDS: int = 3600
+
 
 settings = Settings()

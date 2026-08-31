@@ -742,3 +742,64 @@ a {
 .step-dot.on {
   background: var(--accent);
 }
+
+/* Analytics (Fase 5): grafico de barras por hora do dia */
+.chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 140px;
+}
+
+.chart-bar {
+  flex: 1;
+  min-width: 4px;
+  border-radius: 3px 3px 0 0;
+  background: var(--border);
+  transition: background 0.15s;
+}
+
+.chart-bar.best {
+  background: var(--accent);
+}
+
+.chart-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+/* Dashboard: seções numeradas e linhas de fonte */
+.section-title {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.source-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.source-row:first-of-type {
+  border-top: 0;
+}
+
+.source-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 140px;
+}
+
+.btn.ghost.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}

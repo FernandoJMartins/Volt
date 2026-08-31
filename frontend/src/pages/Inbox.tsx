@@ -35,6 +35,7 @@ export default function Inbox() {
   const [gapMax, setGapMax] = useState(120)
   const [horizon, setHorizon] = useState(30)
   const [respectWindow, setRespectWindow] = useState(true)
+  const [strategy, setStrategy] = useState<'spread' | 'optimized'>('spread')
 
   async function autoScheduleAll() {
     // Agenda por conta, respeitando a janela e o limite diario de cada uma.
@@ -53,6 +54,7 @@ export default function Inbox() {
           max_interval_minutes: gapMax,
           horizon_days: horizon,
           respect_window: respectWindow,
+          strategy,
         })
         total += res.scheduled
       }
@@ -293,85 +295,21 @@ export default function Inbox() {
             <span>Respeitar a janela de horário de cada conta</span>
           </label>
 
-          <div className="banner" style={{ marginTop: 12 }}>
-            Cada post cai em um horário sorteado dentro do intervalo acima — só para o feed não
-            ficar mecânico. Nada aqui tenta esconder automação do X.
-          </div>
-
-          <button
-            className="btn block"
-            style={{ marginTop: 16 }}
-            onClick={autoScheduleAll}
-            disabled={autoBusy}
-          >
-            {autoBusy ? 'Agendando...' : 'Agendar'}
-          </button>
-        </Modal>
-      )}
-
-      {autoOpen && (
-        <Modal title="Agendar automaticamente" onClose={() => setAutoOpen(false)}>
           <div className="field">
-            <label className="label">Começar daqui a (minutos)</label>
-            <input
-              className="input"
-              type="number"
-              min={1}
-              max={1440}
-              value={startIn}
-              onChange={(e) => setStartIn(Number(e.target.value))}
-            />
+            <label className="label">Estratégia de horários</label>
+            <select
+              className="select"
+              value={strategy}
+              onChange={(e) => setStrategy(e.target.value as 'spread' | 'optimized')}
+            >
+              <option value="spread">Espalhado — intervalo sorteado</option>
+              <option value="optimized">Otimizado — melhores horários (Analytics)</option>
+            </select>
             <div className="small muted" style={{ marginTop: 6 }}>
-              De 1 minuto até 24 horas.
+              Otimizado usa o engajamento histórico da conta por hora do dia; sem dados
+              suficientes, cai no espalhamento uniforme na janela.
             </div>
           </div>
-
-          <label className="label">Intervalo entre posts (minutos)</label>
-          <div className="row" style={{ gap: 12, marginBottom: 16 }}>
-            <div style={{ flex: 1 }}>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                max={1440}
-                value={gapMin}
-                onChange={(e) => setGapMin(Number(e.target.value))}
-              />
-              <div className="small muted" style={{ marginTop: 4 }}>mínimo</div>
-            </div>
-            <div style={{ flex: 1 }}>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                max={1440}
-                value={gapMax}
-                onChange={(e) => setGapMax(Number(e.target.value))}
-              />
-              <div className="small muted" style={{ marginTop: 4 }}>máximo</div>
-            </div>
-          </div>
-
-          <div className="field">
-            <label className="label">Programar até quantos dias à frente? (máx. 30)</label>
-            <input
-              className="input"
-              type="number"
-              min={1}
-              max={30}
-              value={horizon}
-              onChange={(e) => setHorizon(Math.min(Number(e.target.value), 30))}
-            />
-          </div>
-
-          <label className="checkline">
-            <input
-              type="checkbox"
-              checked={respectWindow}
-              onChange={(e) => setRespectWindow(e.target.checked)}
-            />
-            <span>Respeitar a janela de horário de cada conta</span>
-          </label>
 
           <div className="banner" style={{ marginTop: 12 }}>
             Cada post cai em um horário sorteado dentro do intervalo acima — só para o feed não

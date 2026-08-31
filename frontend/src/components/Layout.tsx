@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   IconCalendar,
+  IconChart,
   IconHome,
   IconPencil,
   IconProfile,
@@ -15,6 +16,7 @@ const NAV = [
   { to: '/texts', label: 'Meus Textos', Icon: IconPencil },
   { to: '/inbox', label: 'Conteúdo', Icon: IconSparkle },
   { to: '/queue', label: 'Fila', Icon: IconCalendar },
+  { to: '/analytics', label: 'Analytics', Icon: IconChart },
   { to: '/accounts', label: 'Contas', Icon: IconProfile },
 ]
 

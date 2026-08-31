@@ -7,6 +7,7 @@ import { api } from './api/client'
 import Layout from './components/Layout'
 import { Loading } from './components/ui'
 import Accounts from './pages/Accounts'
+import Analytics from './pages/Analytics'
 import Compose from './pages/Compose'
 import Dashboard from './pages/Dashboard'
 import Inbox from './pages/Inbox'
@@ -54,6 +55,7 @@ function App() {
           <Route path="/compose" element={<Compose />} />
           <Route path="/compose/:postId" element={<Compose />} />
           <Route path="/queue" element={<Queue />} />
+          <Route path="/analytics" element={<Analytics />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/settings" element={<Settings />} />
         </Route>

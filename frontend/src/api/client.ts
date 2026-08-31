@@ -54,10 +54,11 @@ export type MonitoredAccount = {
   id: number
   username: string
   display_name: string
-  source_type: 'manual' | 'x_api'
+  source_type: 'manual' | 'web'
   is_active: boolean
   last_collected_at: string | null
   posts_found: number
+  posts_per_collect: number
 }
 
 export type SourcePost = {
@@ -124,6 +125,69 @@ export type MediaAsset = {
 }
 
 export type Stats = Record<string, number>
+
+export type HourlyBucket = {
+  hour: number
+  posts: number
+  likes: number
+  reposts: number
+  replies: number
+  views: number
+  weighted: number
+  score: number
+}
+
+export type RecentPostStat = {
+  id: number
+  url: string
+  text: string
+  published_at: string
+  likes: number
+  reposts: number
+  replies: number
+  views: number
+}
+
+export type AccountAnalytics = {
+  account_id: number
+  username: string
+  display_name: string
+  avatar_url: string
+  published: number
+  with_stats: number
+  avg_likes: number
+  avg_reposts: number
+  avg_replies: number
+  avg_views: number
+  engagement_per_post: number
+  hourly: HourlyBucket[]
+  best_hours: number[]
+  recent: RecentPostStat[]
+  last_collected_at: string | null
+}
+
+export type BestTimes = {
+  account_id: number
+  date: string
+  timezone: string
+  source: 'data' | 'fallback'
+  best_hours: number[]
+  slots: string[]
+}
+
+export type SourceAnalytics = {
+  id: number
+  username: string
+  display_name: string
+  collected: number
+  avg_likes: number
+  avg_reposts: number
+  avg_replies: number
+  avg_views: number
+  hourly: HourlyBucket[]
+  best_hours: number[]
+  last_collected_at: string | null
+}
 
 // ---------- Endpoints ----------
 
@@ -215,6 +279,7 @@ export const api = {
     max_interval_minutes?: number
     horizon_days?: number
     respect_window?: boolean
+    strategy?: 'spread' | 'optimized'
   }) =>
     post<{ scheduled: number; not_scheduled: number; first: string; last: string }>(
       '/scheduled-posts/auto',
@@ -232,12 +297,13 @@ export const api = {
   publishNow: (id: number) => post(`/scheduled-posts/${id}/publish-now`),
   cancelScheduled: (id: number) => del(`/scheduled-posts/${id}`),
 
-  retweets: () => get<any[]>('/retweets'),
-  createRetweets: (body: {
-    source_tweet_id: string
-    target_account_ids: number[]
-    origin_x_account_id?: number | null
-    delay_min_minutes: number
-    delay_max_minutes: number
-  }) => post<{ created: number }>('/retweets', body),
+  analyticsOverview: (accountId?: number) =>
+    get<AccountAnalytics[]>(`/analytics/overview${accountId ? `?account_id=${accountId}` : ''}`),
+  bestTimes: (accountId: number, count: number, date?: string) =>
+    get<BestTimes>(
+      `/analytics/best-times?account_id=${accountId}&count=${count}${date ? `&day=${date}` : ''}`,
+    ),
+  refreshAnalytics: (accountId: number) =>
+    post<{ queued: boolean }>(`/analytics/refresh?account_id=${accountId}`),
+  analyticsSources: () => get<SourceAnalytics[]>('/analytics/sources'),
 }

@@ -20,6 +20,7 @@ from app.models import (
     CandidateMedia,
     ContentCandidate,
     MonitoredAccount,
+    PostStats,
     RetweetJob,
     ScheduledPost,
     SourcePost,
@@ -42,11 +43,12 @@ def _redis_settings() -> RedisSettings:
     return RedisSettings.from_dsn(settings.REDIS_URL)
 
 
-async def enqueue(function: str, *args) -> None:
-    """Helper usado pelas rotas da API."""
+async def enqueue(function: str, *args, defer_seconds: int = 0) -> None:
+    """Helper usado pelas rotas da API. defer_seconds adia a execucao do job
+    (usado para a primeira coleta de engajamento logo apos publicar)."""
     pool = await create_pool(_redis_settings())
     try:
-        await pool.enqueue_job(function, *args)
+        await pool.enqueue_job(function, *args, _defer_by=defer_seconds)
     finally:
         await pool.aclose()
 
@@ -428,6 +430,10 @@ async def publish_scheduled(ctx, scheduled_id: int) -> dict:
             )
             await db.commit()
             log.info("Publicado %s por @%s", post_id, account.username)
+            # Primeira foto do engajamento ~45min depois: da tempo do post
+            # ganhar interacoes iniciais sem sobrecarregar o navegador agora.
+            if account.auth_method == "browser" and post_id:
+                await enqueue("collect_post_stats", account.id, defer_seconds=2700)
             return {"published_post_id": post_id}
 
         except x_api.CreditsDepleted as exc:
@@ -525,7 +531,7 @@ async def run_retweet(ctx, job_id: int) -> dict:
 
 
 class WorkerSettings:
-    functions = [collect_account, collect_all, publish_scheduled, run_retweet]
+    functions = [collect_account, collect_all, collect_post_stats, publish_scheduled, run_retweet]
     redis_settings = _redis_settings()
     max_jobs = 10
-    job_timeout = 120
+    job_timeout = 300

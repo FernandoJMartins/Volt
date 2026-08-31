@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import accounts, auth, content, dashboard, media, monitoring, publishing
+from app.api import accounts, analytics, auth, content, dashboard, media, monitoring, publishing
 from app.config import settings
 from app.db import init_db
 
@@ -38,6 +38,7 @@ for router in (
     media.router,
     publishing.router,
     dashboard.router,
+    analytics.router,
 ):
     app.include_router(router)
 

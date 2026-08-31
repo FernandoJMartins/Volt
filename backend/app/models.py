@@ -298,3 +298,37 @@ class AuditLog(Base):
     entity_id: Mapped[str] = mapped_column(String(64), default="")
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+
+
+class PostStats(Base):
+    """Engajamento dos posts PUBLICADOS pela propria conta (Fase 5 — analytics).
+
+    Uma linha por ScheduledPost publicado. Atualizada pelo worker
+    `collect_post_stats` (le o perfil da conta via navegador, de graca).
+    `snapshots` guarda o historico de coletas (ultimas 20) para ver a curva de
+    crescimento; as colunas top-level sempre refletem a coleta mais recente.
+
+    Limite conhecido: views vem zeradas da leitura do perfil (o DOM do X nao
+    expoe views no timeline) — o engajamento ponderado ignora views de proposito.
+    """
+
+    __tablename__ = "post_stats"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    scheduled_post_id: Mapped[int] = mapped_column(
+        ForeignKey("scheduled_posts.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    x_account_id: Mapped[int] = mapped_column(
+        ForeignKey("x_accounts.id", ondelete="CASCADE"), index=True
+    )
+
+    likes: Mapped[int] = mapped_column(Integer, default=0)
+    reposts: Mapped[int] = mapped_column(Integer, default=0)
+    replies: Mapped[int] = mapped_column(Integer, default=0)
+    views: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Historico: [{"at": iso, "likes", "reposts", "replies", "views"}, ...]
+    snapshots: Mapped[list] = mapped_column(JSON, default=list)
+    first_collected_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    last_collected_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+

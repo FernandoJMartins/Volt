@@ -1,17 +1,21 @@
 """Fila de publicacao, calendario e retweets escalonados entre contas proprias."""
 
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.deps import current_user
 from app.db import get_db
 from app.api.content import load_media_map
-from app.models import AuditLog, ContentCandidate, RetweetJob, ScheduledPost, User, XAccount
+from app.models import AuditLog, ContentCandidate, PostStats, RetweetJob, ScheduledPost, User, XAccount
+from app.services import analytics as an
+from app.services.scheduling import distribute_slots
 from app.workers import enqueue
 
 router = APIRouter(prefix="/api", tags=["publishing"])
@@ -37,6 +41,9 @@ class AutoScheduleIn(BaseModel):
     max_interval_minutes: int = Field(default=120, ge=1, le=1440)
     horizon_days: int = Field(default=30, ge=1, le=30)
     respect_window: bool = True
+    # 'spread' = espacamento pelo intervalo escolhido; 'optimized' = horarios
+    # guiados pelo engajamento historico da conta (Fase 5, analytics).
+    strategy: str = Field(default="spread", pattern="^(spread|optimized)$")
 
 
 class RescheduleIn(BaseModel):
@@ -170,22 +177,43 @@ async def auto_schedule(
 
     created: list[datetime] = []
     remaining = list(pending)
-    while remaining and cursor <= deadline:
-        slot = _fit_window(cursor, account) if body.respect_window else cursor
-        if slot > deadline:
-            break
-        candidate = remaining.pop(0)
-        db.add(
-            ScheduledPost(
-                user_id=user.id,
-                x_account_id=account.id,
-                content_candidate_id=candidate.id,
-                scheduled_at=slot,
+
+    if body.strategy == "optimized":
+        # Horarios guiados pelo engajamento historico (Fase 5). A janela e o
+        # intervalo minimo da conta continuam valendo; sem dados suficientes a
+        # geracao cai no espalhamento uniforme.
+        slots = await _optimized_horizon_slots(db, account, cursor, deadline)
+        for slot in slots:
+            if not remaining:
+                break
+            candidate = remaining.pop(0)
+            db.add(
+                ScheduledPost(
+                    user_id=user.id,
+                    x_account_id=account.id,
+                    content_candidate_id=candidate.id,
+                    scheduled_at=slot,
+                )
             )
-        )
-        candidate.status = "scheduled"
-        created.append(slot)
-        cursor = slot + timedelta(minutes=random.randint(lo, hi))
+            candidate.status = "scheduled"
+            created.append(slot)
+    else:
+        while remaining and cursor <= deadline:
+            slot = _fit_window(cursor, account) if body.respect_window else cursor
+            if slot > deadline:
+                break
+            candidate = remaining.pop(0)
+            db.add(
+                ScheduledPost(
+                    user_id=user.id,
+                    x_account_id=account.id,
+                    content_candidate_id=candidate.id,
+                    scheduled_at=slot,
+                )
+            )
+            candidate.status = "scheduled"
+            created.append(slot)
+            cursor = slot + timedelta(minutes=random.randint(lo, hi))
 
     db.add(
         AuditLog(
@@ -198,6 +226,7 @@ async def auto_schedule(
                 "not_scheduled": len(remaining),
                 "interval": [lo, hi],
                 "horizon_days": body.horizon_days,
+                "strategy": body.strategy,
             },
         )
     )
@@ -208,6 +237,64 @@ async def auto_schedule(
         "first": created[0] if created else None,
         "last": created[-1] if created else None,
     }
+
+
+async def _optimized_horizon_slots(
+    db: AsyncSession, account: XAccount, cursor: datetime, deadline: datetime
+) -> list[datetime]:
+    """Slots do horizonte guiados pelo engajamento historico, no fuso da conta.
+
+    Um conjunto por dia (ate posts_per_day), escolhido pelas melhores horas de
+    `PostStats`. Sem dados suficientes, cada dia cai no espalhamento uniforme —
+    o agendamento nunca falha por falta de historico.
+    """
+    try:
+        tz = ZoneInfo(account.timezone or "UTC")
+    except Exception:  # noqa: BLE001
+        tz = timezone.utc
+
+    since = datetime.now(timezone.utc) - timedelta(days=90)
+    rows = (
+        await db.execute(
+            select(PostStats, ScheduledPost)
+            .join(ScheduledPost, ScheduledPost.id == PostStats.scheduled_post_id)
+            .where(PostStats.x_account_id == account.id, ScheduledPost.scheduled_at >= since)
+        )
+    ).all()
+    norm = []
+    for stat, post in rows:
+        published_at = post.scheduled_at
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=timezone.utc)
+        norm.append(
+            {
+                "published_at": published_at,
+                "likes": stat.likes,
+                "reposts": stat.reposts,
+                "replies": stat.replies,
+                "views": stat.views,
+            }
+        )
+    agg = an.hourly_aggregates(norm, tz)
+
+    per_day = min(account.posts_per_day, settings.MAX_POSTS_PER_DAY)
+    min_gap = max(account.min_interval_minutes, settings.MIN_INTERVAL_MINUTES)
+
+    slots: list[datetime] = []
+    day = cursor.astimezone(tz).date()
+    end_day = deadline.astimezone(tz).date()
+    while day <= end_day:
+        day_dt = datetime.combine(day, time.min, tzinfo=tz)
+        day_slots = an.optimized_slots(
+            day_dt, per_day, account.window_start, account.window_end, min_gap, agg
+        )
+        if day_slots is None:
+            day_slots = distribute_slots(
+                day_dt, per_day, account.window_start, account.window_end, min_gap
+            )
+        slots.extend(day_slots)
+        day += timedelta(days=1)
+    return [s for s in slots if cursor < s <= deadline]
 
 
 def _fit_window(moment: datetime, account: XAccount) -> datetime:

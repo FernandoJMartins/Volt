@@ -39,6 +39,12 @@ export const IconProfile = ({ size, className }: P) => (
   </svg>
 )
 
+export const IconChart = ({ size, className }: P) => (
+  <svg {...base(size)} className={className}>
+    <path d="M4 20V10.5h3.5V20H4Zm6.25 0V4h3.5v16h-3.5Zm6.25 0v-6.5H20V20h-3.5Z" />
+  </svg>
+)
+
 export const IconSettings = ({ size, className }: P) => (
   <svg {...base(size)} className={className}>
     <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm-1.5 3.5a1.5 1.5 0 1 1 3 0 1.5 1.5 0 0 1-3 0Z" />
