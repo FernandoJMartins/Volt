@@ -25,6 +25,17 @@ services:
       interval: 5s
       retries: 10
 
+  # IA LOCAL (gratis): servidor Ollama na propria maquina. Depois de subir,
+  # puxe um modelo: docker compose exec ollama ollama pull qwen2.5:7b
+  # (use llama3.2:3b em maquinas com pouca RAM; ver README).
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+
   api:
     build: ./backend
     env_file: .env
@@ -86,3 +97,4 @@ volumes:
   pgdata:
   media:
   sessions:
+  ollama:

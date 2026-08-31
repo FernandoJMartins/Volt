@@ -1,11 +1,12 @@
 """Conteudo: criacao manual, geracao opcional por IA, aprovacao com anti-cross-posting."""
 
+import logging
 import random
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -23,7 +24,7 @@ from app.models import (
     User,
     XAccount,
 )
-from app.services import ai, dedup
+from app.services import ai, bulk, dedup
 
 router = APIRouter(prefix="/api/content", tags=["content"])
 
@@ -60,6 +61,23 @@ class BulkIn(BaseModel):
 
 class CandidateUpdate(BaseModel):
     text: str = Field(min_length=1, max_length=280)
+
+
+class BulkGenerateIn(BaseModel):
+    """Gera rascunhos com IA a partir dos posts coletados, divididos IGUALMENTE
+    entre as contas (ex.: 30 posts / 3 contas = 10 por conta).
+
+    Regras de negocio:
+      - Cada post de origem e' usado UMA vez — o mesmo conteudo nunca cai em
+        duas contas (a checagem de similaridade tambem roda na aprovacao).
+      - Todo rascunho nasce com MIDIA da sua biblioteca (propria/licenciada).
+      - Tudo entra como `pending`: aprovacao humana obrigatoria.
+    """
+
+    source_post_ids: list[int] = []  # vazio = top pelo score
+    count: int = Field(default=10, ge=1, le=100)
+    account_ids: list[int] = []  # vazio = todas as contas ativas
+    attach_media: bool = True
 
 
 def media_payload(links) -> list[dict]:
@@ -140,8 +158,14 @@ async def _check_cross_posting(
 
 @router.get("/ai-status")
 async def ai_status():
-    """A UI usa isto para decidir se mostra o botao de IA."""
-    return {"available": ai.provider.available(), "model": settings.AI_MODEL if ai.provider.available() else None}
+    """A UI usa isto para decidir se mostra os botoes de IA."""
+    available = ai.provider.available()
+    model = None
+    if available:
+        model = (
+            settings.AI_MODEL if settings.AI_PROVIDER == "anthropic" else settings.OLLAMA_MODEL
+        )
+    return {"available": available, "provider": settings.AI_PROVIDER, "model": model}
 
 
 @router.post("/generate")
@@ -151,7 +175,8 @@ async def generate(
     if not ai.provider.available():
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "IA desativada. Ative AI_ENABLED e configure ANTHROPIC_API_KEY, ou escreva o texto manualmente.",
+            "IA desativada. Ative AI_ENABLED=true no .env (com Ollama local ou ANTHROPIC_API_KEY), "
+            "ou escreva o texto manualmente.",
         )
 
     account = await db.get(XAccount, body.target_x_account_id)
@@ -345,6 +370,136 @@ async def create_bulk(
     }
 
 
+@router.post("/bulk-generate", status_code=201)
+async def bulk_generate(
+    body: BulkGenerateIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """Gera rascunhos com IA distribuidos igualmente entre as contas.
+
+    Fluxo: posts coletados (das contas clonadas) -> IA reescreve (angulo novo,
+    persona da conta destino) -> midia propria anexada -> `pending` para voce
+    aprovar em Conteudo e agendar (manual ou otimizado).
+    """
+    if not ai.provider.available():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "IA desativada. Ative AI_ENABLED=true no .env (Ollama local ou ANTHROPIC_API_KEY).",
+        )
+
+    accounts_q = select(XAccount).where(
+        XAccount.user_id == user.id, XAccount.is_active.is_(True)
+    )
+    if body.account_ids:
+        accounts_q = accounts_q.where(XAccount.id.in_(body.account_ids))
+    accounts = (await db.execute(accounts_q)).scalars().all()
+    if not accounts:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Nenhuma conta destino valida")
+
+    if body.source_post_ids:
+        posts_q = select(SourcePost).where(
+            SourcePost.id.in_(body.source_post_ids), SourcePost.user_id == user.id
+        )
+    else:
+        posts_q = (
+            select(SourcePost)
+            .where(SourcePost.user_id == user.id)
+            .order_by(SourcePost.score.desc())
+            .limit(max(body.count * 2, 20))
+        )
+    posts = (await db.execute(posts_q)).scalars().all()
+    if not posts:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "Nenhum post coletado. Colete contas em Início primeiro."
+        )
+
+    chosen = list(posts)[: body.count]
+    assignments = bulk.round_robin_assign(chosen, accounts)
+
+    # Regra de negocio: todo post tem midia — da SUA biblioteca (propria ou
+    # licenciada). Midia de terceiro (referencia) nunca publica.
+    media: list[MediaAsset] = []
+    if body.attach_media:
+        media = (
+            await db.execute(
+                select(MediaAsset).where(
+                    MediaAsset.user_id == user.id,
+                    MediaAsset.origin.in_(MediaAsset.PUBLISHABLE),
+                )
+            )
+        ).scalars().all()
+        if not media:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Regra: todo post precisa de mídia. Envie suas imagens/vídeos em Mídia "
+                "(ou gere sem mídia desativando attach_media).",
+            )
+
+    created: list[int] = []
+    per_account: dict[str, int] = {}
+    failed = 0
+    for idx, (post, account) in enumerate(assignments):
+        try:
+            angles, usage = await ai.provider.generate_angles(
+                post.text, account.persona_prompt, 1
+            )
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            logging.getLogger("api").warning(
+                "bulk-generate falhou para @%s (%s)", account.username, exc
+            )
+            continue
+        if not angles:
+            failed += 1
+            continue
+
+        candidate = ContentCandidate(
+            user_id=user.id,
+            source_post_id=post.id,
+            target_x_account_id=account.id,
+            generated_text=angles[0][:280],
+            origin="ai",
+            status="pending",
+            content_hash=dedup.content_hash(angles[0]),
+        )
+        db.add(candidate)
+        await db.flush()
+
+        if media:
+            db.add(
+                CandidateMedia(
+                    content_candidate_id=candidate.id,
+                    media_asset_id=media[idx % len(media)].id,
+                    position=0,
+                )
+            )
+        db.add(
+            AIGeneration(
+                user_id=user.id,
+                source_post_id=post.id,
+                target_account_id=account.id,
+                prompt=usage["prompt"],
+                response=usage["raw"],
+                model=usage["model"],
+                tokens_input=usage["tokens_input"],
+                tokens_output=usage["tokens_output"],
+            )
+        )
+        created.append(candidate.id)
+        per_account[account.username] = per_account.get(account.username, 0) + 1
+
+    db.add(
+        AuditLog(
+            user_id=user.id,
+            action="content.bulk_generated",
+            entity="content_candidate",
+            entity_id=",".join(str(i) for i in created[:20]),
+            detail={"count": len(created), "accounts": per_account, "failed": failed},
+        )
+    )
+    await db.commit()
+    return {"created": len(created), "per_account": per_account, "failed": failed}
+
+
 @router.patch("/{candidate_id}")
 async def edit_candidate(
     candidate_id: int,
@@ -371,6 +526,22 @@ async def approve(
     c = await db.get(ContentCandidate, candidate_id)
     if not c or c.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conteudo nao encontrado")
+
+    # Regra de negocio: todo post precisa de midia propria/licenciada.
+    if settings.MEDIA_REQUIRED:
+        has_media = (
+            await db.execute(
+                select(func.count())
+                .select_from(CandidateMedia)
+                .where(CandidateMedia.content_candidate_id == c.id)
+            )
+        ).scalar_one()
+        if not has_media:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Regra do painel: todo post precisa de mídia. Anexe uma imagem/vídeo "
+                "seu antes de aprovar (em Mídia, marque como própria ou licenciada).",
+            )
 
     conflict = await _check_cross_posting(db, user.id, c.generated_text, c.target_x_account_id)
     if conflict:

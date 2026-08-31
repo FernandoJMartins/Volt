@@ -240,7 +240,9 @@ export const api = {
   sourcePosts: (order: 'score' | 'recent' = 'score') =>
     get<SourcePost[]>(`/source-posts?order=${order}`),
 
-  aiStatus: () => get<{ available: boolean; model: string | null }>('/content/ai-status'),
+  aiStatus: () => get<{ available: boolean; provider?: string; model: string | null }>(
+    '/content/ai-status',
+  ),
   generate: (body: {
     target_x_account_id: number
     source_post_id?: number | null
@@ -265,6 +267,16 @@ export const api = {
   }) =>
     post<{ created: number; per_account: Record<string, number>; skipped_texts: number }>(
       '/content/bulk',
+      body,
+    ),
+  bulkGenerate: (body: {
+    source_post_ids?: number[]
+    count: number
+    account_ids: number[]
+    attach_media?: boolean
+  }) =>
+    post<{ created: number; per_account: Record<string, number>; failed: number }>(
+      '/content/bulk-generate',
       body,
     ),
 

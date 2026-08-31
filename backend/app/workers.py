@@ -379,7 +379,12 @@ async def collect_post_stats(ctx, account_id: int) -> dict:
 async def publish_scheduled(ctx, scheduled_id: int) -> dict:
     async with SessionLocal() as db:
         row = await db.get(ScheduledPost, scheduled_id)
-        if not row or row.status in ("published", "cancelled"):
+        if not row or row.status in ("publishing", "published", "cancelled"):
+            # 'publishing' entra no skip: com re-enfileiramento (worker fora do ar,
+            # retry manual), dois jobs do MESMO post podem disparar juntos; sem o
+            # guarda o segundo publica o texto de novo (post duplicado visto em
+            # teste real). Trade-off: se o processo morrer no meio, o post fica
+            # preso em 'publishing' e exige intervencao manual — melhor que duplicar.
             return {"skipped": True}
         if row.scheduled_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc) + timedelta(
             seconds=30

@@ -1,9 +1,9 @@
 # Painel de Conteúdo para X
 
 Content Intelligence + Scheduler para múltiplas contas do X, com aprovação humana,
-IA opcional e coleta/publicação via **navegador (Playwright)** — sem os custos da API
-oficial. O caminho da API oficial continua no código (`SOURCE_MODE=x_api`), mas o
-modo padrão é `web`.
+IA opcional e coleta/publicação via **navegador (Playwright)** — **sem a API oficial do X**
+(paga por post). O código legado da API oficial permanece inativo (`x_api`), sem exposição
+na interface.
 
 ## Como rodar
 
@@ -29,23 +29,28 @@ docker compose up --build
 
 Crie sua conta na tela de login (o primeiro acesso é um cadastro normal).
 
-## Conectar contas do X (modo navegador)
+## Conectar contas do X (importar cookies)
 
-Cada conta é logada **uma vez** num navegador, e a sessão fica salva criptografada.
-Como o servidor Ubuntu não tem tela, o login é feito por **noVNC** — você vê o Chromium
-do servidor pelo seu próprio navegador.
+O X bloqueia login a partir do IP do servidor ("Limitamos temporariamente seu
+acesso") — por isso o projeto **não tem mais fluxo de login no servidor** (o antigo
+noVNC foi removido). O método é importar os cookies de uma sessão já logada:
 
-1. No servidor, defina `VNC_PASSWORD` no `.env` (protege o noVNC).
-2. Dispare o login: `POST /api/x/accounts/browser/login` → devolve `account_id` e `vnc_url`.
-3. Abra a `vnc_url` (padrão `http://localhost:6080/vnc.html`). **Em produção, acesse por
-   túnel SSH**, nunca com a porta 6080 aberta:
-   ```bash
-   ssh -L 6080:localhost:6080 usuario@servidor
-   ```
-4. Faça login no X na janela (resolva captcha/2FA na mão). O sistema detecta o login e
-   salva a sessão. Acompanhe em `GET /api/x/accounts/browser/{id}/status`.
-5. Sessão expirou depois? `POST /api/x/accounts/{id}/browser/relogin` reabre o mesmo
-   contexto isolado.
+1. No navegador **da sua máquina**, logado no X na conta desejada, exporte os
+   cookies com a extensão "Get cookies.txt LOCALLY" (só o site x.com) — ou
+   equivalente que gere cookies.txt/JSON.
+2. No painel: **Contas → Importar cookies** e escolha o arquivo (ou cole o conteúdo).
+   Para refazer a sessão de uma conta existente: **Configurar → Importar cookies**.
+3. O backend converte para o `storage_state` do Playwright (só cookies de
+   x.com/twitter.com passam; o resto é descartado), salva criptografado e valida a
+   sessão abrindo o x.com headless. Se validar, a conta aparece como conectada.
+
+- Nova conta: `POST /api/x/accounts/browser/import-cookies` com
+  `{"cookies_text": "..."}` (reaproveita a conta browser pendente, se houver).
+- Conta existente: `POST /api/x/accounts/{id}/browser/cookies` (substitui a
+  sessão — funciona como um re-login).
+
+Formatos aceitos: cookies.txt (Netscape), lista JSON de cookies ou
+`storage_state` completo do Playwright. O despejo nunca é logado nem devolvido.
 
 **Isolamento:** cada conta roda num `BrowserContext` próprio, criado do zero e semeado só
 com a sessão dela. Duas contas nunca dividem contexto, cookies ou navegador.
@@ -54,14 +59,20 @@ com a sessão dela. Duas contas nunca dividem contexto, cookies ou navegador.
 
 1. **Monitoramento → Pool de textos**: cole seus textos (separados por `---`). Esta é a fonte
    de custo zero.
-2. **Monitoramento → Fontes**: cadastre uma fonte tipo *Pool manual* e clique em atualizar
-   para rodar a coleta.
+2. **Início → Contas para clonar**: adicione o @perfil que serve de inspiração, defina
+   quantos posts puxar por coleta (1–100) e clique em Coletar — os posts (com a **mídia do
+   perfil** baixada como referência visual) aparecem no feed, rankeados. Coletar de novo
+   nunca duplica o que já entrou.
 3. **Início**: os posts aparecem rankeados por score. Clique num card.
 4. **Criar conteúdo**: escolha a conta destino, escreva o texto (ou gere ângulos com IA, se
    ativada) e aprove.
 5. **Conteúdo**: revise, edite e agende.
 6. **Fila**: acompanhe, publique agora, cancele. Depois de publicado, dá para escalonar
    retweets entre suas outras contas.
+
+A mídia dos posts coletados (imagens; poster no caso de vídeo) é baixada como
+**referência visual** (`origin=source_reference`) e exibida no feed e na tela de criação.
+Republicar mídia de terceiros continua bloqueado — só mídia própria ou licenciada publica.
 
 ## Custos reais (importante)
 
@@ -75,8 +86,30 @@ Desde fev/2026 a API do X é **pay-per-use**:
 Com **R$20/mês** você tem ~740 leituras — insuficiente para monitoramento ao vivo. Por isso a
 fonte padrão é o pool manual, e o `XApiProvider` só entra quando você definir orçamento.
 
-**IA**: o plano Claude Pro **não** inclui API. Precisa de `ANTHROPIC_API_KEY` com billing
-próprio — mas o custo é irrisório (centavos por geração). A IA é sempre opcional.
+**IA**: pode ser **local e grátis** via Ollama (roda no próprio servidor — recomendado) ou
+Anthropic na nuvem (centavos por geração). A IA é sempre opcional.
+
+### IA local com Ollama (grátis)
+
+```bash
+docker compose up -d ollama
+docker compose exec ollama ollama pull qwen2.5:7b   # ~4.7GB; para pouca RAM: llama3.2:3b
+```
+
+No `.env`: `AI_ENABLED=true`, `AI_PROVIDER=ollama` (padrão), `OLLAMA_MODEL=qwen2.5:7b`.
+Depois: `docker compose up -d --force-recreate api` para a API carregar o novo .env.
+A geração pede ao modelo ângulos NOVOS (nunca cópia) no tom da persona de cada conta, e a
+checagem de similaridade bloqueia na aprovação qualquer texto próximo demais do que já foi
+usado em outra conta — cada post em cada conta é único.
+
+## Gerar em lote com IA (Início → seção 3)
+
+Escolha quantos posts gerar e para quais contas (vazio = todas). A IA reescreve os posts
+coletados (os melhores pelo score), **divide igualmente entre as contas** (30 posts / 3
+contas = 10 por conta) e anexa mídia da sua biblioteca — **todo post precisa de mídia
+própria/licenciada** (regra do painel). Os rascunhos entram em *Conteúdo* para você aprovar;
+depois agende manualmente ou use *Agendar tudo automaticamente* com a estratégia otimizada
+(a IA escolhe os melhores horários pelo engajamento histórico).
 
 ## Arquitetura
 
@@ -85,10 +118,11 @@ frontend (React+Vite)  →  api (FastAPI)  →  postgres + redis
                                 ↕
                    worker (Arq) + scheduler
                                 ↕
-              Navegador (Playwright) / X API oficial / Anthropic
+              Navegador (Playwright) / Ollama (IA local) / Anthropic (opcional)
 ```
 
-O login headed usa Xvfb + x11vnc + noVNC no container `api` (ver `entrypoint.sh`).
+O login é sempre headless: a sessão entra por importação de cookies, validada e
+renovada pelo próprio Chromium no container `api`.
 
 | Serviço | Papel |
 |---|---|
@@ -98,6 +132,25 @@ O login headed usa Xvfb + x11vnc + noVNC no container `api` (ver `entrypoint.sh`
 
 Trocar a fonte de dados = implementar `SourceProvider` em `backend/app/services/sources.py`.
 Trocar o provedor de IA = implementar `AIProvider` em `backend/app/services/ai.py`.
+
+## Analytics e otimização de horários (Fase 5)
+
+Depois de publicado, o engajamento de cada post (likes, reposts, replies) é coletado
+**de hora em hora** pelo scheduler — e também ~45min após cada publicação — via navegador,
+no perfil da própria conta (1 navegação por conta, sem custo de API). Dá para forçar a coleta
+em **Analytics → Coletar agora**.
+
+A tela **Analytics** mostra, por conta: volume publicado, engajamento médio, gráfico de
+engajamento por hora do dia (24h, melhores horas destacadas) e os posts recentes com métricas.
+
+**Agendamento otimizado**: em *Conteúdo → Agendar tudo automaticamente*, a estratégia
+"Otimizado" posiciona os posts nas horas de maior engajamento histórico da conta (dentro da
+janela e do intervalo mínimo dela). O score de cada hora usa prior bayesiano — hora com pouca
+amostra não vira campeã por um único post viral. Sem dados suficientes, cai automaticamente no
+espalhamento uniforme.
+
+Limitação conhecida: o X não expõe *views* no timeline, então views ficam zeradas nas
+métricas — o engajamento ponderado ignora views de propósito.
 
 ## Proteções implementadas
 
@@ -117,11 +170,27 @@ Trocar o provedor de IA = implementar `AIProvider` em `backend/app/services/ai.p
 - ✅ **Fase 1** — auth, OAuth, Postgres, dashboard, fontes, pool, coleta
 - ✅ **Fase 2** — score relativo, ranking, tela de criação, IA opcional
 - ✅ **Fase 3** — aprovação, edição, scheduler, fila, publisher, retweet escalonado
-- ⏳ **Fase 4** — Alembic, media_assets, rate limit interno, testes ampliados
-- ⏳ **Fase 5** — analytics e otimização de horários
+- ✅ **Fase 4** — Alembic, media_assets, rate limit interno, testes
+- ✅ **Fase 5** — analytics de posts publicados e otimização de horários
+
+### Migrações (Alembic) e testes
+
+```bash
+# dentro do container api (ou de fora, com docker compose exec api ...)
+alembic revision --autogenerate -m "descricao"   # gera migracao a partir dos models
+alembic upgrade head                               # aplica migracoes pendentes
+alembic check                                      # conferir se models == banco
+python -m pytest tests/ -q                         # suite de testes (sem depender do banco)
+```
+
+- Migração inicial em `backend/alembic/versions/`; o banco existente foi carimbado
+  (`stamp head`) — mudanças novas de schema entram via Alembic, não mais `create_all`.
+- Testes cobrem: parser de cookies (formatos/limites/dominio), scoring, dedup
+  (anti cross-posting), distribuição de horários e fumaça da API (rotas + /health).
 
 ## Aviso sobre retweets entre contas
 
-Amplificar o mesmo post com várias contas suas pode ser interpretado como *platform
-manipulation* pelas políticas do X. O recurso usa o endpoint oficial e fica sob seu controle,
-com registro em auditoria — mas o risco de conta é real. Use com critério.
+O fluxo de retweet escalonado entre as próprias contas (que dependia da API oficial) foi
+removido da interface; o código no backend permanece inativo. Amplificar o mesmo post com
+várias contas pode ser interpretado como *platform manipulation* pelas políticas do X —
+use outras formas de amplificação com critério.

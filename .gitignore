@@ -15,6 +15,15 @@ venv/
 # Sessoes autenticadas = credenciais. NUNCA versionar.
 /data/
 /sessions/
+
+# Estado local do agente (instrucoes/memoria de sessao) — nao e' codigo do projeto.
+.codewhale/
 /accounts/
 /browser-profiles/
 *.sqlite
+
+# Artefato do tsc -b
+*.tsbuildinfo
+
+# Worktree local de desenvolvimento (nunca commitar como gitlink)
+.wt-fase5/
