@@ -12,6 +12,9 @@ RUN playwright install --with-deps chromium
 # A pilha de tela virtual (Xvfb + x11vnc + noVNC) foi REMOVIDA na Fase 4:
 # o X bloqueia login a partir do IP do servidor, entao o login e' sempre
 # headless e a sessao entra por importacao de cookies (ver README).
+# ffmpeg: remux de video (baixa midia do tweet e limpa metadados sem re-encode).
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY . .
 RUN chmod +x entrypoint.sh

@@ -12,7 +12,7 @@ import {
 } from '../components/ui'
 
 const TABS = [
-  { key: 'pending', label: 'Revisão' },
+  { key: 'pending', label: 'Pendentes' },
   { key: 'approved', label: 'Aprovados' },
   { key: 'blocked', label: 'Bloqueados' },
   { key: 'published', label: 'Publicados' },

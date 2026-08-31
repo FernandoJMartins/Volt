@@ -17,13 +17,13 @@ class Settings(BaseSettings):
     X_CALLBACK_URL: str = "http://localhost:8010/api/x/accounts/callback"
 
     AI_ENABLED: bool = False
-    # "ollama" (local, gratis) ou "anthropic" (nuvem, paga por token).
+    # "ollama" (local, gratis, servico `ollama` no compose) ou "anthropic" (nuvem, paga).
     AI_PROVIDER: str = "ollama"
+    OLLAMA_BASE_URL: str = "http://ollama:11434"
+    OLLAMA_MODEL: str = "llama3.2:3b"
+    # So usados quando AI_PROVIDER=anthropic (opcional, pago).
     ANTHROPIC_API_KEY: str = ""
     AI_MODEL: str = "claude-sonnet-5"
-    # Ollama local: servidor na maquina (host.docker.internal dentro do container).
-    OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
-    OLLAMA_MODEL: str = "qwen2.5:7b"
 
     # Regra de negocio: todo post precisa de midia propria/licenciada para ser
     # aprovado. Desative apenas se quiser posts so de texto.

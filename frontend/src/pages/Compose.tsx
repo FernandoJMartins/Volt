@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type MediaAsset, type SourcePost, type XAccount } from '../api/client'
 import { IconBack, IconImage, IconSparkle } from '../components/Icons'
@@ -15,12 +15,18 @@ export default function Compose() {
   const [post, setPost] = useState<SourcePost | null>(null)
   const [accounts, setAccounts] = useState<XAccount[]>([])
   const [aiAvailable, setAiAvailable] = useState(false)
+  // Botao "Gerar versao com IA" no card do tweet vem com ?generate=ai.
+  const autoGenRan = useRef(false)
+  const [pendingAutoGen, setPendingAutoGen] = useState(params.get('generate') === 'ai')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   const [target, setTarget] = useState<number | ''>('')
   const [angles, setAngles] = useState<string[]>([])
   const [draft, setDraft] = useState('')
+  const [sourceMode, setSourceMode] = useState<'post' | 'text'>('post')
+  const [sourceMedia, setSourceMedia] = useState<MediaAsset[]>([])
+  const [selectedSourceMedia, setSelectedSourceMedia] = useState<number[]>([])
   const [generating, setGenerating] = useState(false)
   const [saving, setSaving] = useState(false)
   const [media, setMedia] = useState<MediaAsset[]>([])
@@ -48,14 +54,21 @@ export default function Compose() {
       setAccounts(accs)
       setAiAvailable(ai.available)
       if (accs.length) setTarget(accs[0].id)
+      // Padrao: angulos do tweet. Sem tweet (ex.: "Meus Textos"), so "meu texto".
+      setSourceMode(postId ? 'post' : 'text')
 
       if (textId) {
         // Veio de "Meus Textos": ja entra editavel na caixa final.
         const t = await api.manualText(Number(textId))
         setDraft(t.text)
       } else if (postId) {
-        const posts = await api.sourcePosts('recent')
-        setPost(posts.find((p) => String(p.id) === postId) ?? null)
+        // Busca direta por id: o post pode ser antigo e estar fora da lista recente.
+        const p = await api.sourcePost(Number(postId))
+        setPost(p)
+        // Midia do proprio tweet: baixada sem metadados na coleta.
+        const sm = await api.sourcePostMedia(Number(postId))
+        setSourceMedia(sm)
+        setSelectedSourceMedia(sm.map((m) => m.id))
       }
     }
     boot()
@@ -63,8 +76,24 @@ export default function Compose() {
       .finally(() => setLoading(false))
   }, [postId, textId])
 
-  // Base da geracao: o post coletado, ou o proprio texto que esta na caixa.
-  const aiSource = post?.text ?? draft.trim()
+  // Origem da geracao conforme a opcao escolhida: o tweet ou o texto da caixa.
+  const usePost = sourceMode === 'post' && !!post
+  const aiSource = usePost && post ? post.text : draft.trim()
+
+  // Dispara automaticamente a geracao quando o usuario veio do card do tweet.
+  useEffect(() => {
+    if (
+      pendingAutoGen &&
+      !autoGenRan.current &&
+      aiAvailable &&
+      post &&
+      target !== ''
+    ) {
+      autoGenRan.current = true
+      setPendingAutoGen(false)
+      void generate()
+    }
+  })
 
   async function generate() {
     if (!target || !aiSource) return
@@ -73,8 +102,8 @@ export default function Compose() {
     try {
       const res = await api.generate({
         target_x_account_id: Number(target),
-        source_post_id: post?.id ?? null,
-        source_text: post ? undefined : aiSource,
+        source_post_id: usePost && post ? post.id : null,
+        source_text: usePost ? undefined : aiSource,
         count: 3,
       })
       setAngles(res.angles)
@@ -95,7 +124,7 @@ export default function Compose() {
         target_x_account_id: Number(target),
         source_post_id: post?.id ?? null,
         origin: angles.includes(draft.trim()) ? 'ai' : 'manual',
-        media_ids: media.map((m) => m.id),
+        media_ids: [...selectedSourceMedia, ...media.map((m) => m.id)],
       })
       if (approve) await api.approve(candidate.id)
       navigate('/inbox')
@@ -132,6 +161,34 @@ export default function Compose() {
               <p className="post-text">{post.text}</p>
               <MediaStrip media={post.media} size={92} />
               <Metrics post={post} />
+            {sourceMedia.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div className="small muted bold" style={{ marginBottom: 6 }}>
+                  MÍDIA DO TWEET — sem metadados, toque para usar
+                </div>
+                <div className="row wrap" style={{ gap: 8 }}>
+                  {sourceMedia.map((m) => {
+                    const on = selectedSourceMedia.includes(m.id)
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        className={`media-tog${on ? ' on' : ''}`}
+                        title={on ? 'Será publicada com o post' : 'Não usar esta mídia'}
+                        onClick={() =>
+                          setSelectedSourceMedia((prev) =>
+                            on ? prev.filter((id) => id !== m.id) : [...prev, m.id],
+                          )
+                        }
+                      >
+                        <MediaThumb item={m} size={84} />
+                        {on && <span className="media-tog-check">✓</span>}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
             </div>
           </div>
         </div>
@@ -160,22 +217,48 @@ export default function Compose() {
         </div>
 
         {aiAvailable ? (
-          <button
-            className="btn ghost block"
-            onClick={generate}
-            disabled={generating || !target || !aiSource}
-          >
-            <IconSparkle size={18} />
-            {generating
-              ? 'Gerando...'
-              : aiSource
-                ? 'Gerar 3 ângulos com IA (opcional)'
-                : 'Escreva um texto abaixo para gerar ângulos'}
-          </button>
+          <>
+            {post && (
+              <div className="field" style={{ marginTop: 14 }}>
+                <label className="label">Origem dos ângulos</label>
+                <div className="segmented">
+                  <button
+                    type="button"
+                    className={sourceMode === 'post' ? 'active' : ''}
+                    onClick={() => setSourceMode('post')}
+                  >
+                    Texto do tweet
+                  </button>
+                  <button
+                    type="button"
+                    className={sourceMode === 'text' ? 'active' : ''}
+                    onClick={() => setSourceMode('text')}
+                  >
+                    Meu texto
+                  </button>
+                </div>
+              </div>
+            )}
+            <button
+              className="btn ghost block"
+              style={{ marginTop: post ? 12 : 0 }}
+              onClick={generate}
+              disabled={generating || !target || !aiSource}
+            >
+              <IconSparkle size={18} />
+              {generating
+                ? 'Gerando...'
+                : aiSource
+                  ? usePost
+                    ? 'Gerar 3 ângulos do tweet com IA'
+                    : 'Gerar 3 ângulos do meu texto com IA'
+                  : 'Escreva um texto abaixo para gerar ângulos'}
+            </button>
+          </>
         ) : (
           <div className="banner" style={{ margin: 0 }}>
             IA desativada — escreva o texto você mesmo. Para ativar, configure{' '}
-            <code>ANTHROPIC_API_KEY</code> no .env.
+            <code>AI_PROVIDER=ollama</code> e <code>AI_ENABLED=true</code> no .env.
           </div>
         )}
       </div>
@@ -236,7 +319,7 @@ export default function Compose() {
               onChange={(e) => onPickFiles(e.target.files)}
             />
           </label>
-          <span className="small muted">Só mídia sua ou licenciada</span>
+          <span className="small muted">Foto / vídeo próprios (opcional)</span>
         </div>
 
         <div className="row" style={{ marginTop: 10 }}>

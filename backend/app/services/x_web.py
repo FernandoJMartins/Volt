@@ -35,6 +35,8 @@ SEL = {
 
 _STATUS_RE = re.compile(r"/status/(\d+)")
 _NUM_RE = re.compile(r"([\d.,]+)\s*([KMkm]?)")
+# Master playlist HLS: .../pl/<token>.m3u8 — o token pode ter hifen/underscore.
+_MASTER_HLS_RE = re.compile(r"/pl/[A-Za-z0-9_-]+\.m3u8")
 
 
 async def is_logged_in(page: Page) -> bool:
@@ -218,6 +220,86 @@ def _parse_iso(value: str | None) -> datetime:
         return datetime.now(timezone.utc)
 
 
+async def fetch_media_entities(page: Page, status_id: str, username: str) -> list[dict]:
+    """Midia de um tweet visitando a pagina dele (statuses/show.json esta 403).
+
+    Video: captura o master playlist HLS da propria rede do navegador e devolve
+    com os cookies da sessao (o CDN video.twimg.com exige). Fotos: le os <img>
+    da midia do tweet. Devolve [{"type", "url", "mime", ...}]. Nao levanta.
+    """
+    handle = username.lstrip("@")
+    captured: list[str] = []
+
+    def on_request(req):
+        if "video.twimg.com" in req.url and _MASTER_HLS_RE.search(req.url):
+            if req.url not in captured:
+                captured.append(req.url)
+
+    try:
+        page.on("request", on_request)
+        await page.goto(f"{BASE}/{handle}/status/{status_id}", wait_until="domcontentloaded")
+        try:
+            await page.wait_for_selector(SEL["video"], timeout=10000)
+        except PWTimeout:
+            pass  # sem <video>: foto ou tweet sem midia
+
+        # Forca o player a iniciar (sem autoplay ele nao pede o manifesto).
+        await page.evaluate(
+            """() => {
+                const v = document.querySelector('video');
+                if (v) {
+                    v.scrollIntoView({ block: 'center' });
+                    v.muted = true;
+                    v.play().catch(() => {});
+                }
+                const comp = document.querySelector('[data-testid="videoComponent"]');
+                if (comp && comp !== v) comp.click();
+            }"""
+        )
+        # Aguarda o manifesto HLS aparecer na rede (poll, nao sleep fixo).
+        deadline = asyncio.get_event_loop().time() + 12
+        while not captured and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(1)
+
+        entities: list[dict] = []
+        if captured:
+            cookies = await page.context.cookies("https://x.com")
+            cookie_header = "; ".join(
+                f"{c['name']}={c['value']}"
+                for c in cookies
+                if c["name"] in ("auth_token", "ct0")
+            )
+            entities.append(
+                {
+                    "type": "video",
+                    "url": captured[0],
+                    "mime": "application/vnd.apple.mpegurl",
+                    "cookies": cookie_header,
+                }
+            )
+
+        # Fotos da propria midia do tweet (avatares e posters ficam de fora).
+        photos = await page.evaluate(
+            """() => {
+                const out = [];
+                for (const img of document.querySelectorAll('img[src*="pbs.twimg.com/media"]')) {
+                    const url = img.src.split('?')[0];
+                    if (!out.includes(url)) out.push(url);
+                }
+                return out;
+            }"""
+        )
+        for url in photos[:4]:
+            entities.append(
+                {"type": "photo", "url": url + "?format=jpg&name=large", "mime": "image/jpeg"}
+            )
+        return entities
+    except Exception:  # noqa: BLE001 — pagina pode sumir/mudar; coleta nao morre
+        return []
+    finally:
+        page.remove_listener("request", on_request)
+
+
 async def fetch_timeline(
     page: Page, username: str, since_id: str = "", max_posts: int = 15
 ) -> list[dict]:
@@ -255,27 +337,83 @@ async def fetch_timeline(
         stalls = stalls + 1 if len(out) == before else 0
         await page.mouse.wheel(0, 2400)
         await asyncio.sleep(1.2)
+
+    # Fase 2: midia. Fotos ja vieram no DOM; videos exigem visitar a pagina do
+    # tweet para capturar o manifesto HLS (o endpoint show.json esta 403).
+    for data in out:
+        if not data.get("has_media"):
+            continue
+        photos = [
+            {"type": "photo", "url": u + "?format=jpg&name=large", "mime": "image/jpeg"}
+            for u in data["media_metadata"].get("images", [])
+        ]
+        if data["media_metadata"].get("video"):
+            data["media_entities"] = await fetch_media_entities(page, data["x_post_id"], handle)
+        else:
+            data["media_entities"] = photos
     return out
 
 
+async def _post_button_ready(page: Page) -> bool:
+    """O botao de postar so aceita clique quando o X termina de processar a midia.
+
+    O X usa aria-disabled (nao o atributo disabled), por isso checamos os dois.
+    """
+    return await page.evaluate(
+        """() => {
+            const b = document.querySelector('[data-testid="tweetButton"]');
+            return !!b && b.getAttribute('aria-disabled') !== 'true' && !b.disabled;
+        }"""
+    )
+
+
 async def publish(page: Page, text: str, media_paths: list[str] | None = None) -> str:
-    """Publica um post e devolve o id (best-effort). Levanta em caso de falha."""
+    """Publica um post e devolve o id (best-effort). Levanta em caso de falha.
+
+    Antes, a publicacao com midia podia clicar no botao ainda desabilitado
+    (upload processando) e o X ignorava o clique silenciosamente — o job
+    marcava 'published' sem nada ter saido. Agora: espera o botao habilitar,
+    clica e CONFIRMA (o X redireciona do composer ou mostra toast de sucesso).
+    """
     await page.goto(SEL["compose_url"], wait_until="domcontentloaded")
-    box = await page.wait_for_selector(SEL["composer_box"], timeout=15000)
+    box = await page.wait_for_selector(SEL["composer_box"], timeout=30000)
     await box.click()
     await box.type(text, delay=15)
 
     if media_paths:
-        file_input = await page.wait_for_selector(SEL["file_input"], timeout=10000, state="attached")
+        file_input = await page.wait_for_selector(
+            SEL["file_input"], timeout=10000, state="attached"
+        )
         await file_input.set_input_files(media_paths)
-        # Espera o preview subir antes de habilitar o botao.
-        await asyncio.sleep(3)
+        # Upload de midia: o botao de postar so habilita quando termina.
+        deadline = asyncio.get_event_loop().time() + 180
+        ready = False
+        while asyncio.get_event_loop().time() < deadline:
+            ready = await _post_button_ready(page)
+            if ready:
+                break
+            await asyncio.sleep(3)
+        if not ready:
+            raise RuntimeError("Upload de midia nao terminou — botao de postar seguiu desabilitado")
 
     button = await page.wait_for_selector(SEL["post_button"], timeout=10000)
     await button.click()
 
-    # Confirma pela navegacao/toast e tenta capturar o id do post recem-criado.
-    await asyncio.sleep(3)
+    # Confirmacao de sucesso: redireciona do composer OU toast "post sent".
+    try:
+        await page.wait_for_function(
+            """() => {
+                if (!location.pathname.startsWith('/compose')) return true;
+                const toast = document.querySelector('[data-testid="toast"]');
+                return !!(toast && /sent|enviado|publicado/i.test(toast.textContent || ''));
+            }""",
+            timeout=20000,
+        )
+    except PWTimeout as exc:
+        raise RuntimeError(
+            "Post nao confirmado: sem redirecionamento nem toast de sucesso apos clicar"
+        ) from exc
+
     return await _last_status_id(page)
 
 

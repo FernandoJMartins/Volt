@@ -229,10 +229,10 @@ class RetweetJob(Base):
 
 
 class MediaAsset(Base):
-    """Midia do usuario. `origin` separa midia PROPRIA de midia de terceiro.
+    """Midia do usuario. `origin` separa midia PROPRIA de midia do tweet coletado.
 
-    Midia de terceiro entra como 'source_reference' e NAO pode ser publicada —
-    republicar midia alheia é risco juridico. So 'owned' e 'licensed' publicam.
+    `source_reference` = midia do proprio tweet (baixada SEM metadados durante a
+    coleta). Por decisao do operador, ela e publicavel como as demais.
     """
 
     __tablename__ = "media_assets"
@@ -249,7 +249,7 @@ class MediaAsset(Base):
     is_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
-    PUBLISHABLE = ("owned", "licensed")
+    PUBLISHABLE = ("owned", "licensed", "source_reference")
 
     @property
     def publishable(self) -> bool:

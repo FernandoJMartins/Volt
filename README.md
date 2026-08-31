@@ -86,18 +86,14 @@ Desde fev/2026 a API do X é **pay-per-use**:
 Com **R$20/mês** você tem ~740 leituras — insuficiente para monitoramento ao vivo. Por isso a
 fonte padrão é o pool manual, e o `XApiProvider` só entra quando você definir orçamento.
 
-**IA**: pode ser **local e grátis** via Ollama (roda no próprio servidor — recomendado) ou
-Anthropic na nuvem (centavos por geração). A IA é sempre opcional.
+**IA**: o padrão é **Ollama local** (`AI_PROVIDER=ollama`, serviço `ollama` no compose) —
+gratuita, sem key, nada sai da máquina. O modelo padrão é
+`huihui_ai/llama3.2-abliterate:3b` (versão sem censura, para conteúdo +18);
+para trocar, basta mudar `OLLAMA_MODEL` no `.env` (o Ollama baixa o modelo na
+primeira geração). O provedor pago (`AI_PROVIDER=anthropic`) continua no código
+se um dia fizer sentido — mas **não é necessário** e nunca é selecionado por
+padrão. A IA é sempre opcional.
 
-### IA local com Ollama (grátis)
-
-```bash
-docker compose up -d ollama
-docker compose exec ollama ollama pull qwen2.5:7b   # ~4.7GB; para pouca RAM: llama3.2:3b
-```
-
-No `.env`: `AI_ENABLED=true`, `AI_PROVIDER=ollama` (padrão), `OLLAMA_MODEL=qwen2.5:7b`.
-Depois: `docker compose up -d --force-recreate api` para a API carregar o novo .env.
 A geração pede ao modelo ângulos NOVOS (nunca cópia) no tom da persona de cada conta, e a
 checagem de similaridade bloqueia na aprovação qualquer texto próximo demais do que já foi
 usado em outra conta — cada post em cada conta é único.

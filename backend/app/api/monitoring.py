@@ -196,6 +196,56 @@ async def delete_text(
 # ---------- Posts coletados ----------
 
 
+def _serialize_post(post: SourcePost, assets_by_id: dict) -> dict:
+    """Payload de um post, com a midia do tweet (baixada sem metadados)."""
+    asset_ids = (post.media_metadata or {}).get("assets") or []
+    media = []
+    for aid in asset_ids:
+        asset = assets_by_id.get(aid)
+        if asset is not None:
+            media.append(
+                {
+                    "id": asset.id,
+                    "kind": asset.kind,
+                    "url": f"/api/media/{asset.id}/file",
+                    "filename": asset.filename,
+                }
+            )
+    return {
+        "id": post.id,
+        "text": post.text,
+        "author_username": post.author_username,
+        "monitored_account_id": post.monitored_account_id,
+        "posted_at": post.posted_at,
+        "likes": post.likes,
+        "reposts": post.reposts,
+        "replies": post.replies,
+        "views": post.views,
+        "has_media": post.has_media,
+        "original_url": post.original_url,
+        "score": post.score,
+        "score_breakdown": post.score_breakdown or {},
+        "media": media,
+    }
+
+
+async def _assets_map(db: AsyncSession, user_id: int, rows: list[SourcePost]) -> dict:
+    """Busca as midias de todos os posts de uma vez (evita N+1)."""
+    asset_ids: set[int] = set()
+    for row in rows:
+        asset_ids.update((row.media_metadata or {}).get("assets") or [])
+    if not asset_ids:
+        return {}
+    assets = (
+        await db.execute(
+            select(MediaAsset).where(
+                MediaAsset.id.in_(asset_ids), MediaAsset.user_id == user_id
+            )
+        )
+    ).scalars().all()
+    return {a.id: a for a in assets}
+
+
 @router.get("/source-posts")
 async def list_source_posts(
     user: User = Depends(current_user),
@@ -208,45 +258,17 @@ async def list_source_posts(
         SourcePost.score.desc() if order == "score" else SourcePost.collected_at.desc()
     ).limit(limit)
     rows = (await db.execute(query)).scalars().all()
+    assets_by_id = await _assets_map(db, user.id, list(rows))
+    return [_serialize_post(r, assets_by_id) for r in rows]
 
-    # Resolve os assets de midia referenciados nos posts (midia do perfil).
-    asset_ids = [
-        aid
-        for r in rows
-        for aid in ((r.media_metadata or {}).get("assets") or [])
-    ]
-    assets = {}
-    if asset_ids:
-        found = (
-            await db.execute(select(MediaAsset).where(MediaAsset.id.in_(asset_ids)))
-        ).scalars().all()
-        assets = {a.id: a for a in found}
 
-    return [
-        {
-            "id": r.id,
-            "text": r.text,
-            "author_username": r.author_username,
-            "monitored_account_id": r.monitored_account_id,
-            "posted_at": r.posted_at,
-            "likes": r.likes,
-            "reposts": r.reposts,
-            "replies": r.replies,
-            "views": r.views,
-            "has_media": r.has_media,
-            "media": [
-                {
-                    "id": a.id,
-                    "kind": a.kind,
-                    "url": f"/api/media/{a.id}/file",
-                    "filename": a.filename,
-                }
-                for aid in ((r.media_metadata or {}).get("assets") or [])
-                if (a := assets.get(aid)) is not None
-            ],
-            "original_url": r.original_url,
-            "score": r.score,
-            "score_breakdown": r.score_breakdown or {},
-        }
-        for r in rows
-    ]
+@router.get("/source-posts/{post_id}")
+async def get_source_post(
+    post_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """Post unico por id — usado pela tela Criar conteudo (nao depende da lista recente)."""
+    post = await db.get(SourcePost, post_id)
+    if not post or post.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Post nao encontrado")
+    assets_by_id = await _assets_map(db, user.id, [post])
+    return _serialize_post(post, assets_by_id)

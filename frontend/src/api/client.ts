@@ -239,10 +239,12 @@ export const api = {
 
   sourcePosts: (order: 'score' | 'recent' = 'score') =>
     get<SourcePost[]>(`/source-posts?order=${order}`),
+  sourcePost: (id: number) => get<SourcePost>(`/source-posts/${id}`),
 
   aiStatus: () => get<{ available: boolean; provider?: string; model: string | null }>(
     '/content/ai-status',
   ),
+  sourcePostMedia: (id: number) => get<MediaAsset[]>(`/content/posts/${id}/media`),
   generate: (body: {
     target_x_account_id: number
     source_post_id?: number | null

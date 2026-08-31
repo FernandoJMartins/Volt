@@ -156,15 +156,47 @@ async def _check_cross_posting(
     return dedup.find_conflict(text, existing, settings.SIMILARITY_THRESHOLD)
 
 
+@router.get("/posts/{post_id}/media")
+async def source_post_media(
+    post_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    """Midia do tweet coletado (baixada sem metadados) para reuso na criacao."""
+    post = await db.get(SourcePost, post_id)
+    if not post or post.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Post nao encontrado")
+    asset_ids = (post.media_metadata or {}).get("assets") or []
+    if not asset_ids:
+        return []
+    rows = (
+        await db.execute(
+            select(MediaAsset).where(
+                MediaAsset.id.in_(asset_ids), MediaAsset.user_id == user.id
+            )
+        )
+    ).scalars().all()
+    by_id = {a.id: a for a in rows}
+    return [
+        {
+            "id": a.id,
+            "filename": a.filename,
+            "mime_type": a.mime_type,
+            "kind": a.kind,
+            "size_bytes": a.size_bytes,
+            "origin": a.origin,
+            "publishable": a.publishable,
+            "is_sensitive": a.is_sensitive,
+            "url": f"/api/media/{a.id}/file",
+        }
+        for i in asset_ids
+        if (a := by_id.get(i)) is not None
+    ]
+
+
 @router.get("/ai-status")
 async def ai_status():
     """A UI usa isto para decidir se mostra os botoes de IA."""
     available = ai.provider.available()
-    model = None
-    if available:
-        model = (
-            settings.AI_MODEL if settings.AI_PROVIDER == "anthropic" else settings.OLLAMA_MODEL
-        )
+    model = ai.provider.model_name if available else None
     return {"available": available, "provider": settings.AI_PROVIDER, "model": model}
 
 
@@ -175,8 +207,8 @@ async def generate(
     if not ai.provider.available():
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "IA desativada. Ative AI_ENABLED=true no .env (com Ollama local ou ANTHROPIC_API_KEY), "
-            "ou escreva o texto manualmente.",
+            "IA desativada. Ative AI_ENABLED=true no .env (com Ollama local ou "
+            "ANTHROPIC_API_KEY), ou escreva o texto manualmente.",
         )
 
     account = await db.get(XAccount, body.target_x_account_id)

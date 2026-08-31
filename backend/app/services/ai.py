@@ -1,11 +1,14 @@
 """Geracao de angulos com IA — OPCIONAL, com provedor LOCAL gratuito (Ollama).
 
-O app funciona 100% sem IA. Se AI_ENABLED=false, `available()` retorna False e a
-UI nao oferece geracao. Provedores:
-  - Ollama (padrao): modelo local no proprio servidor — zero custo por token.
-    Subir com `docker compose up -d ollama` e `docker compose exec ollama ollama
-    pull qwen2.5:7b` (ou outro modelo; ver README).
-  - Anthropic (opcional): nuvem, centavos por geracao — precisa ANTHROPIC_API_KEY.
+O app funciona 100% sem IA. Se AI_ENABLED=false ou o provider escolhido
+nao estiver configurado, `available()` retorna False e a UI nao oferece o botao.
+
+Provedores:
+  - Ollama (padrao): modelo local no servico `ollama` do compose — zero custo
+    por token. Sobe junto com `docker compose up -d` e puxa o modelo na
+    primeira geracao (ver OLLAMA_MODEL no .env).
+  - Anthropic (opcional): nuvem, centavos por geracao — precisa
+    AI_PROVIDER=anthropic e ANTHROPIC_API_KEY.
 """
 
 import json
@@ -16,16 +19,20 @@ import httpx
 
 from app.config import settings
 
-SYSTEM = """Voce reescreve conteudo para o X (Twitter) em portugues do Brasil.
+SYSTEM = """Voce reescreve conteudo para o X (Twitter) em portugues do Brasil, para perfis +18.
 
-Nunca copie o texto original. Analise assunto, contexto, estrutura, tom e intencao,
-e entao produza angulos NOVOS sobre o mesmo tema.
+O tom e SAFADO e PROVOCANTE: linguagem picante, insinuacoes, duplo sentido,
+vocabulario explicito quando o tema pedir. Nada de tom moralista, pudico ou
+conselho de relacionamento — o objetivo e excitar e entreter, nao educar.
+Nunca copie o texto original. Analise assunto, contexto e intencao, e entao
+produza angulos NOVOS sobre o mesmo tema.
 
 Regras:
 - Cada angulo deve ser autossuficiente e publicavel como esta.
 - Maximo 260 caracteres por angulo.
 - Angulos devem ser distintos entre si (abordagens diferentes, nao variacoes da mesma frase).
 - Sem hashtags, sem emoji excessivo, sem aspas envolvendo o texto.
+- Conteudo adulto consensual: sem menores de idade, sem violencia real.
 - Responda APENAS com um array JSON de strings. Nada alem do JSON."""
 
 
@@ -37,10 +44,69 @@ class AIProvider(ABC):
     @abstractmethod
     def available(self) -> bool: ...
 
+    @property
+    @abstractmethod
+    def model_name(self) -> str: ...
+
+
+class OllamaProvider(AIProvider):
+    """IA local gratuita via Ollama — nenhuma key externa, nada sai da maquina."""
+
+    def available(self) -> bool:
+        return bool(settings.AI_ENABLED and settings.AI_PROVIDER == "ollama")
+
+    @property
+    def model_name(self) -> str:
+        return settings.OLLAMA_MODEL
+
+    async def generate_angles(self, source_text: str, persona: str, n: int = 3):
+        persona_block = persona.strip() or "Tom neutro, direto, linguagem brasileira."
+        prompt = (
+            f"PERSONALIDADE DA CONTA DESTINO:\n{persona_block}\n\n"
+            f"POST ORIGINAL (apenas referencia, NAO copie):\n{source_text}\n\n"
+            f"Gere {n} angulos novos."
+        )
+        # Sem `format: json`: no llama3.2:3b o grammar forcado confunde e o modelo
+        # devolve lixo. O exemplo explicito de saida funciona melhor; _parse_angles
+        # cobre os desvios.
+        task = (
+            SYSTEM
+            + '\n\nResponda so com um array JSON de strings, sem nenhum outro texto. '
+            'Exemplo: ["Amiga pediu pra entrar na brincadeira e saiu querendo o lugar dela", '
+            '"Ciume? Aqui a gente divide tudo — inclusive a vontade"]'
+        )
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/generate",
+                json={
+                    "model": settings.OLLAMA_MODEL,
+                    "prompt": task + "\n\n" + prompt,
+                    "stream": False,
+                    # 3B em CPU pode levar ~1 min; 512 tokens e folga larga.
+                    "options": {"num_predict": 512, "temperature": 0.9},
+                },
+                timeout=httpx.Timeout(600.0, connect=10.0),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        text = data.get("response", "") or ""
+        usage = {
+            "model": settings.OLLAMA_MODEL,
+            "tokens_input": data.get("prompt_eval_count"),
+            "tokens_output": data.get("eval_count"),
+            "prompt": prompt,
+            "raw": text,
+        }
+        return _parse_angles(text, n), usage
+
 
 class AnthropicProvider(AIProvider):
     def available(self) -> bool:
-        return bool(settings.AI_ENABLED and settings.ANTHROPIC_API_KEY)
+        return bool(settings.AI_ENABLED and settings.AI_PROVIDER == "anthropic" and settings.ANTHROPIC_API_KEY)
+
+    @property
+    def model_name(self) -> str:
+        return settings.AI_MODEL
 
     async def generate_angles(self, source_text: str, persona: str, n: int = 3):
         from anthropic import AsyncAnthropic
@@ -63,50 +129,6 @@ class AnthropicProvider(AIProvider):
             "model": settings.AI_MODEL,
             "tokens_input": msg.usage.input_tokens,
             "tokens_output": msg.usage.output_tokens,
-            "prompt": prompt,
-            "raw": text,
-        }
-        return _parse_angles(text, n), usage
-
-
-class OllamaProvider(AIProvider):
-    """Modelo local via servidor Ollama (http://host:11434). Zero custo por token."""
-
-    def available(self) -> bool:
-        return bool(settings.AI_ENABLED)
-
-    async def generate_angles(self, source_text: str, persona: str, n: int = 3):
-        persona_block = persona.strip() or "Tom neutro, direto, linguagem brasileira."
-        prompt = (
-            f"PERSONALIDADE DA CONTA DESTINO:\n{persona_block}\n\n"
-            f"POST ORIGINAL (apenas referencia, NAO copie):\n{source_text}\n\n"
-            f"Gere {n} angulos novos."
-        )
-        payload = {
-            "model": settings.OLLAMA_MODEL,
-            "prompt": prompt,
-            "system": SYSTEM,
-            "stream": False,
-            "options": {"temperature": 0.8, "num_predict": 600},
-        }
-        try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(
-                    f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/generate", json=payload
-                )
-                resp.raise_for_status()
-                body = resp.json()
-        except httpx.HTTPError as exc:
-            raise RuntimeError(
-                f"Ollama indisponivel em {settings.OLLAMA_BASE_URL}: {exc}. "
-                "Subiu o servico? `docker compose up -d ollama` e puxe um modelo."
-            ) from exc
-
-        text = body.get("response", "")
-        usage = {
-            "model": settings.OLLAMA_MODEL,
-            "tokens_input": body.get("prompt_eval_count", 0),
-            "tokens_output": body.get("eval_count", 0),
             "prompt": prompt,
             "raw": text,
         }
