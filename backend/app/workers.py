@@ -75,16 +75,17 @@ async def _fresh_access_token(db, account: XAccount) -> str:
 # ---------------- Coleta ----------------
 
 
-async def collect_account(ctx, account_id: int) -> dict:
+async def collect_account(ctx, account_id: int, max_posts: int | None = None) -> dict:
     async with SessionLocal() as db:
         account = await db.get(MonitoredAccount, account_id)
         if not account or not account.is_active:
             return {"skipped": True}
 
-        log.info("Coletando fonte @%s (%s)", account.username, account.source_type)
+        limit = sources.clamp_collect_count(max_posts or account.posts_per_collect)
+        log.info("Coletando fonte @%s (%s, max=%d)", account.username, account.source_type, limit)
         provider = sources.get_provider(account.source_type)
         try:
-            items = await provider.fetch_new(db, account)
+            items = await provider.fetch_new(db, account, max_posts=limit)
         except x_api.RateLimited as exc:
             log.warning("Rate limit na coleta de @%s. Reset: %s", account.username, exc.reset_at)
             return {"rate_limited": True}
@@ -119,6 +120,7 @@ async def collect_account(ctx, account_id: int) -> dict:
                     replies=item["replies"],
                     views=item["views"],
                     has_media=item["has_media"],
+                    media_metadata=item.get("media_metadata") or {},
                     original_url=item["original_url"],
                     content_hash=content_hash(item["text"]),
                     score=score,

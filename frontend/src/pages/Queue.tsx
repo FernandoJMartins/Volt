@@ -1,35 +1,16 @@
 import { useEffect, useState } from 'react'
-import { api, type QueueItem, type XAccount } from '../api/client'
-import { IconRepost } from '../components/Icons'
-import {
-  Empty,
-  ErrorBanner,
-  Loading,
-  MediaStrip,
-  Modal,
-  Pill,
-  TopBar,
-  formatDate,
-} from '../components/ui'
+import { api, type QueueItem } from '../api/client'
+import { Empty, ErrorBanner, Loading, MediaStrip, Pill, TopBar, formatDate } from '../components/ui'
 
 export default function Queue() {
   const [items, setItems] = useState<QueueItem[]>([])
-  const [accounts, setAccounts] = useState<XAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-
-  const [retweetOf, setRetweetOf] = useState<QueueItem | null>(null)
-  const [targets, setTargets] = useState<number[]>([])
-  const [delayMin, setDelayMin] = useState(5)
-  const [delayMax, setDelayMax] = useState(120)
-  const [done, setDone] = useState('')
 
   async function load() {
     setLoading(true)
     try {
-      const [q, a] = await Promise.all([api.queue(), api.xAccounts()])
-      setItems(q)
-      setAccounts(a)
+      setItems(await api.queue())
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -50,30 +31,11 @@ export default function Queue() {
     }
   }
 
-  async function submitRetweets() {
-    if (!retweetOf || !targets.length) return
-    try {
-      const res = await api.createRetweets({
-        source_tweet_id: retweetOf.published_post_id,
-        target_account_ids: targets,
-        origin_x_account_id: retweetOf.x_account_id,
-        delay_min_minutes: delayMin,
-        delay_max_minutes: delayMax,
-      })
-      setDone(`${res.created} retweets agendados.`)
-      setRetweetOf(null)
-      setTargets([])
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
   return (
     <>
       <TopBar title="Fila" />
 
       {error && <ErrorBanner message={error} />}
-      {done && <div className="banner info">{done}</div>}
 
       {loading ? (
         <Loading />
@@ -115,93 +77,18 @@ export default function Queue() {
               )}
 
               {item.status === 'published' && item.published_post_id && (
-                <>
-                  <a
-                    className="btn ghost sm"
-                    href={`https://x.com/${item.account_username}/status/${item.published_post_id}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Ver no X
-                  </a>
-                  <button
-                    className="btn ghost sm"
-                    onClick={() => {
-                      setRetweetOf(item)
-                      setDone('')
-                    }}
-                  >
-                    <IconRepost size={16} /> Retweetar com outras contas
-                  </button>
-                </>
+                <a
+                  className="btn ghost sm"
+                  href={`https://x.com/${item.account_username}/status/${item.published_post_id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Ver no X
+                </a>
               )}
             </div>
           </div>
         ))
-      )}
-
-      {retweetOf && (
-        <Modal title="Retweet escalonado" onClose={() => setRetweetOf(null)}>
-          <div className="banner">
-            Os retweets serão feitos aos poucos, com intervalo sorteado dentro da faixa escolhida.
-            Amplificação coordenada entre várias contas pode ser vista como manipulação pelo X —
-            use com critério.
-          </div>
-
-          <label className="label" style={{ marginTop: 12 }}>
-            Contas que vão retweetar
-          </label>
-          {accounts
-            .filter((a) => a.id !== retweetOf.x_account_id && a.connected)
-            .map((a) => (
-              <label className="checkline" key={a.id}>
-                <input
-                  type="checkbox"
-                  checked={targets.includes(a.id)}
-                  onChange={(e) =>
-                    setTargets((prev) =>
-                      e.target.checked ? [...prev, a.id] : prev.filter((id) => id !== a.id),
-                    )
-                  }
-                />
-                <span>@{a.username}</span>
-              </label>
-            ))}
-
-          <div className="row" style={{ marginTop: 16, gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <label className="label">Intervalo mín. (min)</label>
-              <input
-                className="input"
-                type="number"
-                min={5}
-                max={120}
-                value={delayMin}
-                onChange={(e) => setDelayMin(Number(e.target.value))}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label className="label">Intervalo máx. (min)</label>
-              <input
-                className="input"
-                type="number"
-                min={5}
-                max={120}
-                value={delayMax}
-                onChange={(e) => setDelayMax(Number(e.target.value))}
-              />
-            </div>
-          </div>
-
-          <button
-            className="btn block"
-            style={{ marginTop: 16 }}
-            onClick={submitRetweets}
-            disabled={!targets.length}
-          >
-            Agendar {targets.length} retweets
-          </button>
-        </Modal>
       )}
     </>
   )

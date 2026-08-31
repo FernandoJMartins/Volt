@@ -101,6 +101,9 @@ class MonitoredAccount(Base):
     display_name: Mapped[str] = mapped_column(String(128), default="")
     source_type: Mapped[str] = mapped_column(String(16), default="web")  # web | x_api | manual
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Quantos posts puxar por coleta (1..100). O usuario define na interface;
+    # a coleta e' IDEMPOTENTE: posts ja' coletados nao duplicam nem rebaixam midia.
+    posts_per_collect: Mapped[int] = mapped_column(Integer, default=15)
     last_collected_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     last_seen_post_id: Mapped[str] = mapped_column(String(64), default="")
     # Media movel de engajamento — base do score relativo

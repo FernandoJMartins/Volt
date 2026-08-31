@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, type MediaAsset, type SourcePost, type XAccount } from '../api/client'
 import { IconBack, IconImage, IconSparkle } from '../components/Icons'
-import { Avatar, ErrorBanner, Loading, MediaThumb, Metrics, TopBar } from '../components/ui'
+import { Avatar, ErrorBanner, Loading, MediaStrip, MediaThumb, Metrics, TopBar } from '../components/ui'
 
 const LIMIT = 280
 
@@ -130,6 +130,7 @@ export default function Compose() {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="bold">@{post.author_username}</div>
               <p className="post-text">{post.text}</p>
+              <MediaStrip media={post.media} size={92} />
               <Metrics post={post} />
             </div>
           </div>

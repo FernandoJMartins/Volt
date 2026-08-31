@@ -65,12 +65,14 @@ export type SourcePost = {
   id: number
   text: string
   author_username: string
+  monitored_account_id: number | null
   posted_at: string
   likes: number
   reposts: number
   replies: number
   views: number
   has_media: boolean
+  media: PostMedia[]
   original_url: string
   score: number
   score_breakdown: Record<string, number>
@@ -216,12 +218,18 @@ export const api = {
   deleteXAccount: (id: number) => del(`/x/accounts/${id}`),
 
   monitored: () => get<MonitoredAccount[]>('/monitoring/accounts'),
-  addMonitored: (body: { username: string; source_type: string }) =>
-    post('/monitoring/accounts', body),
-  updateMonitored: (id: number, body: { source_type?: string; is_active?: boolean }) =>
-    patch(`/monitoring/accounts/${id}`, body),
+  addMonitored: (body: {
+    username: string
+    source_type?: string
+    posts_per_collect?: number
+  }) => post('/monitoring/accounts', body),
+  updateMonitored: (
+    id: number,
+    body: { source_type?: string; is_active?: boolean; posts_per_collect?: number },
+  ) => patch(`/monitoring/accounts/${id}`, body),
   deleteMonitored: (id: number) => del(`/monitoring/accounts/${id}`),
-  collectNow: (id: number) => post(`/monitoring/accounts/${id}/collect`),
+  collectNow: (id: number, maxPosts?: number) =>
+    post(`/monitoring/accounts/${id}/collect${maxPosts ? `?max_posts=${maxPosts}` : ''}`),
 
   manualTexts: () => get<ManualText[]>('/manual-texts'),
   manualText: (id: number) => get<ManualText>(`/manual-texts/${id}`),

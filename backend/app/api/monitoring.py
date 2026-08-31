@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import current_user
 from app.db import get_db
-from app.models import ManualSourceText, MonitoredAccount, SourcePost, User
+from app.models import ManualSourceText, MediaAsset, MonitoredAccount, SourcePost, User
 from app.workers import enqueue
 
 router = APIRouter(prefix="/api", tags=["monitoring"])
@@ -17,7 +17,10 @@ class MonitoredIn(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     display_name: str = ""
     x_user_id: str = ""
-    source_type: str = "manual"
+    source_type: str = "web"
+    # Quantos posts puxar por coleta (1..100). Coleta e' idempotente: posts
+    # ja' coletados nunca duplicam.
+    posts_per_collect: int = Field(default=15, ge=1, le=100)
 
 
 class ManualTextIn(BaseModel):
@@ -56,6 +59,7 @@ async def list_monitored(user: User = Depends(current_user), db: AsyncSession = 
             "is_active": r.is_active,
             "last_collected_at": r.last_collected_at,
             "posts_found": counts.get(r.id, 0),
+            "posts_per_collect": r.posts_per_collect,
             "engagement_baseline": r.engagement_baseline or {},
         }
         for r in rows
@@ -71,7 +75,8 @@ async def add_monitored(
         username=body.username.lstrip("@"),
         display_name=body.display_name,
         x_user_id=body.x_user_id,
-        source_type=body.source_type if body.source_type in ("manual", "x_api") else "manual",
+        source_type=body.source_type if body.source_type in ("manual", "web", "x_api") else "web",
+        posts_per_collect=max(1, min(body.posts_per_collect, 100)),
     )
     db.add(row)
     await db.commit()
@@ -81,6 +86,7 @@ async def add_monitored(
 class MonitoredUpdate(BaseModel):
     source_type: str | None = None
     is_active: bool | None = None
+    posts_per_collect: int | None = Field(None, ge=1, le=100)
 
 
 @router.patch("/monitoring/accounts/{account_id}")
@@ -93,12 +99,15 @@ async def update_monitored(
     row = await db.get(MonitoredAccount, account_id)
     if not row or row.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Fonte nao encontrada")
-    if body.source_type in ("manual", "x_api"):
+    if body.source_type in ("manual", "web", "x_api"):
         row.source_type = body.source_type
     if body.is_active is not None:
         row.is_active = body.is_active
+    if body.posts_per_collect is not None:
+        row.posts_per_collect = max(1, min(body.posts_per_collect, 100))
     await db.commit()
-    return {"id": row.id, "source_type": row.source_type, "is_active": row.is_active}
+    return {"id": row.id, "source_type": row.source_type, "is_active": row.is_active,
+            "posts_per_collect": row.posts_per_collect}
 
 
 @router.delete("/monitoring/accounts/{account_id}")
@@ -115,12 +124,15 @@ async def remove_monitored(
 
 @router.post("/monitoring/accounts/{account_id}/collect")
 async def collect_now(
-    account_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+    account_id: int,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    max_posts: int | None = Query(None, ge=1, le=100),
 ):
     row = await db.get(MonitoredAccount, account_id)
     if not row or row.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Fonte nao encontrada")
-    await enqueue("collect_account", account_id)
+    await enqueue("collect_account", account_id, max_posts)
     return {"queued": True}
 
 
@@ -196,17 +208,42 @@ async def list_source_posts(
         SourcePost.score.desc() if order == "score" else SourcePost.collected_at.desc()
     ).limit(limit)
     rows = (await db.execute(query)).scalars().all()
+
+    # Resolve os assets de midia referenciados nos posts (midia do perfil).
+    asset_ids = [
+        aid
+        for r in rows
+        for aid in ((r.media_metadata or {}).get("assets") or [])
+    ]
+    assets = {}
+    if asset_ids:
+        found = (
+            await db.execute(select(MediaAsset).where(MediaAsset.id.in_(asset_ids)))
+        ).scalars().all()
+        assets = {a.id: a for a in found}
+
     return [
         {
             "id": r.id,
             "text": r.text,
             "author_username": r.author_username,
+            "monitored_account_id": r.monitored_account_id,
             "posted_at": r.posted_at,
             "likes": r.likes,
             "reposts": r.reposts,
             "replies": r.replies,
             "views": r.views,
             "has_media": r.has_media,
+            "media": [
+                {
+                    "id": a.id,
+                    "kind": a.kind,
+                    "url": f"/api/media/{a.id}/file",
+                    "filename": a.filename,
+                }
+                for aid in ((r.media_metadata or {}).get("assets") or [])
+                if (a := assets.get(aid)) is not None
+            ],
             "original_url": r.original_url,
             "score": r.score,
             "score_breakdown": r.score_breakdown or {},

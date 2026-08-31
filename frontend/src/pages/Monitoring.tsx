@@ -9,6 +9,7 @@ export default function Monitoring() {
   const [error, setError] = useState('')
   const [open, setOpen] = useState(false)
   const [username, setUsername] = useState('')
+  const [qty, setQty] = useState(15)
 
   async function load() {
     setLoading(true)
@@ -27,7 +28,11 @@ export default function Monitoring() {
 
   async function addSource() {
     try {
-      await api.addMonitored({ username: username.replace('@', ''), source_type: 'x_api' })
+      await api.addMonitored({
+        username: username.replace('@', ''),
+        source_type: 'web',
+        posts_per_collect: qty,
+      })
       setUsername('')
       setOpen(false)
       load()
@@ -45,8 +50,9 @@ export default function Monitoring() {
       </TopBar>
 
       <div className="banner">
-        Coleta posts reais de contas do X. <strong>Cada post lido é cobrado</strong> pela API
-        (~US$0,005). Para publicar seus próprios textos sem custo, use <strong>Meus Textos</strong>.
+        Coleta posts reais (texto e mídia) de contas do X <strong>via navegador, sem custo</strong>.
+        A mídia do perfil entra como referência visual — republicar mídia de terceiros não é
+        permitido pelo painel.
       </div>
 
       {error && <ErrorBanner message={error} />}
@@ -103,8 +109,20 @@ export default function Monitoring() {
               placeholder="@perfil"
             />
           </div>
+          <div className="field">
+            <label className="label">Posts por coleta (1–100)</label>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={100}
+              value={qty}
+              onChange={(e) => setQty(Math.max(1, Math.min(Number(e.target.value), 100)))}
+            />
+          </div>
           <div className="banner" style={{ margin: '0 0 16px' }}>
-            Exige acesso de leitura pago na API do X. No tier gratuito a coleta retorna erro 403.
+            A coleta abre o perfil no navegador (sessão de uma conta sua já conectada) — sem
+            custo por post.
           </div>
           <button className="btn block" onClick={addSource} disabled={!username.trim()}>
             Adicionar

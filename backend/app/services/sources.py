@@ -1,10 +1,11 @@
-"""Coleta de posts de contas monitoradas via API oficial do X.
+"""Coleta de posts de contas monitoradas.
 
-ATENCAO: cada post lido é cobrado (~US$0,005). Use since_id e paginacao minima.
-Textos proprios do usuario NAO passam por aqui — vao direto para conteudo
-(ver `ManualSourceText` e a tela "Meus Textos"), sem custo nenhum.
+O caminho padrao (e unico usado pela interface) e' o NAVEGADOR — gratis,
+sem a API oficial do X. O provedor XApiProvider existe apenas como legado
+inativo; a UI nao oferece mais a API oficial.
 """
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -14,23 +15,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.security import decrypt
-from app.models import MonitoredAccount, SourcePost, XAccount
+from app.models import MediaAsset, MonitoredAccount, SourcePost, XAccount
 from app.services import x_api, x_web
 from app.services.browser import SessionExpired, manager as browser_manager
+from app.services.storage import classify, storage
 
 log = logging.getLogger("worker")
+
+# Limites da quantidade de posts por coleta (a interface respeita o mesmo teto).
+MAX_COLLECT_POSTS = 100
+DEFAULT_COLLECT_POSTS = 15
+
+
+def clamp_collect_count(value: int | None) -> int:
+    """Quantidade de posts por coleta, limitada a [1, MAX_COLLECT_POSTS]."""
+    if value is None:
+        return DEFAULT_COLLECT_POSTS
+    return max(1, min(int(value), MAX_COLLECT_POSTS))
 
 
 class SourceProvider(ABC):
     @abstractmethod
-    async def fetch_new(self, db: AsyncSession, account: MonitoredAccount) -> list[dict]:
-        """Retorna posts normalizados ainda nao vistos."""
+    async def fetch_new(
+        self, db: AsyncSession, account: MonitoredAccount, max_posts: int = 15
+    ) -> list[dict]:
+        """Retorna posts normalizados. O chamador deduplica por x_post_id."""
 
 
 class XApiProvider(SourceProvider):
-    """Coleta real. Usa since_id para nao repagar por posts ja lidos."""
+    """Legado inativo (API oficial e' paga por post lido). Usa since_id para nao
+    repagar posts ja' lidos; a interface atual nao o oferece mais."""
 
-    async def fetch_new(self, db: AsyncSession, account: MonitoredAccount) -> list[dict]:
+    async def fetch_new(
+        self, db: AsyncSession, account: MonitoredAccount, max_posts: int = 15
+    ) -> list[dict]:
         token_row = (
             await db.execute(
                 select(XAccount).where(
@@ -104,10 +122,66 @@ async def _reader_account(db: AsyncSession, user_id: int) -> XAccount | None:
     ).scalars().first()
 
 
+_MIME_EXT = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+}
+
+
+async def _download_post_media(
+    db: AsyncSession, page, user_id: int, post: dict, budget: list[int]
+) -> None:
+    """Baixa as imagens do post para a biblioteca como 'source_reference'.
+
+    IDEMPOTENTE por fora: o chamador pula posts ja' coletados (already_seen) —
+    nunca rebaixamos a midia de um post que ja' entrou. Midia de terceiro NAO
+    publica (guarda legal do MediaAsset): existe como referencia visual.
+    """
+    urls = (post.get("media_metadata") or {}).get("images") or []
+    urls = urls[: min(4, max(budget[0], 0))]
+
+    async def grab(i: int, url: str) -> int | None:
+        try:
+            resp = await page.request.get(url, timeout=15_000)
+            if not resp.ok:
+                return None
+            mime = (resp.headers.get("content-type") or "image/jpeg").split(";")[0]
+            data = await resp.body()
+            kind = classify(mime, len(data))
+            key = storage.save(
+                user_id, f"src-{post['x_post_id']}-{i}.{_MIME_EXT.get(mime, 'jpg')}", data
+            )
+            asset = MediaAsset(
+                user_id=user_id,
+                filename=f"src-{post['x_post_id']}-{i}",
+                storage_key=key,
+                mime_type=mime,
+                size_bytes=len(data),
+                kind=kind,
+                origin="source_reference",
+            )
+            db.add(asset)
+            await db.flush()
+            return asset.id
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Midia do post %s nao baixada (%s)", post["x_post_id"], exc)
+            return None
+
+    results = await asyncio.gather(*(grab(i, u) for i, u in enumerate(urls)))
+    asset_ids = [r for r in results if r is not None]
+    if asset_ids:
+        budget[0] -= len(asset_ids)
+        post["media_metadata"]["assets"] = asset_ids
+
+
 class PlaywrightProvider(SourceProvider):
     """Coleta via navegador (sem API oficial, sem custo por post lido)."""
 
-    async def fetch_new(self, db: AsyncSession, account: MonitoredAccount) -> list[dict]:
+    async def fetch_new(
+        self, db: AsyncSession, account: MonitoredAccount, max_posts: int = 15
+    ) -> list[dict]:
         reader = await _reader_account(db, account.user_id)
         if reader is None:
             log.warning(
@@ -122,9 +196,20 @@ class PlaywrightProvider(SourceProvider):
                     reader.session_valid = False
                     await db.commit()
                     raise SessionExpired(f"Conta leitora @{reader.username} deslogou.")
+                # Sem since_id: a coleta le os ultimos `max_posts` e quem deduplica
+                # e' o chamador (already_seen). Assim aumentar a quantidade puxa
+                # posts mais antigos sem duplicar os que ja' entraram.
                 posts = await x_web.fetch_timeline(
-                    page, account.username, since_id=account.last_seen_post_id
+                    page, account.username, max_posts=clamp_collect_count(max_posts)
                 )
+                # Baixa a midia do perfil (imagens) como referencia — mesmo
+                # contexto do navegador (cookies/referer do X). Posts ja'
+                # coletados nao rebaixam midia (idempotencia).
+                budget = [min(clamp_collect_count(max_posts) * 4, 48)]
+                for post in posts:
+                    if await already_seen(db, post["x_post_id"]):
+                        continue
+                    await _download_post_media(db, page, account.user_id, post, budget)
             # Persiste o storage_state renovado da conta leitora.
             await db.commit()
         except SessionExpired as exc:
