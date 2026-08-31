@@ -8,7 +8,8 @@ from app.config import settings
 
 # Colunas adicionadas depois do create_all inicial. Postgres aplica ADD COLUMN
 # IF NOT EXISTS de forma idempotente — roda toda subida sem quebrar bancos antigos.
-# Substitui um Alembic completo enquanto o projeto esta em MVP.
+# Desde a Fase 4 o Alembic e' a fonte da verdade para MUDANCAS NOVAS (ver alembic/);
+# estas linhas ficam como rede de seguranca idempotente para bancos ja criados.
 _ADD_COLUMNS = (
     "ALTER TABLE x_accounts ADD COLUMN IF NOT EXISTS auth_method VARCHAR(16) DEFAULT 'browser'",
     "ALTER TABLE x_accounts ADD COLUMN IF NOT EXISTS session_state_encrypted TEXT DEFAULT ''",
@@ -41,7 +42,12 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 
 
 async def init_db() -> None:
-    """Cria as tabelas. MVP usa create_all; Alembic entra na Fase 4."""
+    """Cria as tabelas (create_all idempotente).
+
+    Para MUDANCAS de schema, use Alembic (`alembic revision --autogenerate` +
+    `alembic upgrade head`) — o create_all so' cria o que nao existe e nao
+    altera tabelas existentes.
+    """
     from app import models  # noqa: F401  (registra os models no metadata)
 
     async with engine.begin() as conn:

@@ -46,8 +46,10 @@ class Settings(BaseSettings):
     SCORE_W_MEDIA: float = 0.5
     SCORE_HALFLIFE_HOURS: float = 18.0
 
-    # Anti cross-posting. 0.75 pega parafrase ("mudar" -> "transformar"), enquanto
-    # conteudo genuinamente diferente fica na faixa de 0.1-0.3. Ha folga larga entre os dois.
+    # Anti cross-posting. 0.75 e' CONSERVADOR de proposito: edicoes minimas passam
+    # do limiar, mas troca de uma palavra em texto curto fica ~0.6-0.7 (nao
+    # bloqueia — medida em testes/test_pure_services.py). Subir o limiar = mais
+    # falso positivo; descer = pega mais parafrase.
     SIMILARITY_THRESHOLD: float = 0.75
 
     # Guarda-corpo anti-spam (nao configuravel pelo usuario para valores absurdos)

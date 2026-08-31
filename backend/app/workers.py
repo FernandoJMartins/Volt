@@ -6,10 +6,11 @@ do reset informado pela propria API.
 
 import logging
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from arq import create_pool
 from arq.connections import RedisSettings
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import settings
 from app.core.security import decrypt, encrypt
@@ -211,6 +212,166 @@ async def _publish_via_web(db, account: XAccount, candidate: ContentCandidate) -
     return post_id
 
 
+async def _enforce_pacing(db, row: ScheduledPost, account: XAccount, now: datetime) -> bool:
+    """Rate limit INTERNO no momento da publicacao (Fase 4).
+
+    O scheduler distribui horarios respeitando a janela, mas isso nao impede dois
+    posts de cairem juntos (agendamento manual + auto, retry, relogio do servidor).
+    Aqui revalidamos o pacing da conta e, se violar, REAGENDAMOS o post em vez de
+    publicar — nunca se publica acima do limite da conta.
+
+    Regras:
+      - intervalo minimo entre posts (min_interval_minutes da conta, piso global).
+      - teto diario (posts_per_day), contado no fuso da conta.
+    """
+    interval = timedelta(
+        minutes=max(account.min_interval_minutes, settings.MIN_INTERVAL_MINUTES)
+    )
+    last = (
+        await db.execute(
+            select(ScheduledPost)
+            .where(
+                ScheduledPost.x_account_id == account.id,
+                ScheduledPost.status == "published",
+            )
+            .order_by(ScheduledPost.scheduled_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if last and last.scheduled_at.tzinfo is None:
+        last.scheduled_at = last.scheduled_at.replace(tzinfo=timezone.utc)
+
+    if last and now - last.scheduled_at < interval:
+        row.scheduled_at = last.scheduled_at + interval
+        row.status = "queued"
+        await db.commit()
+        log.info("Post %s reagendado: intervalo minimo de @%s", row.id, account.username)
+        return True
+
+    try:
+        tz = ZoneInfo(account.timezone or "UTC")
+    except Exception:  # noqa: BLE001
+        tz = timezone.utc
+    day_start = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    published_today = (
+        await db.execute(
+            select(func.count())
+            .select_from(ScheduledPost)
+            .where(
+                ScheduledPost.x_account_id == account.id,
+                ScheduledPost.status == "published",
+                ScheduledPost.scheduled_at >= day_start,
+            )
+        )
+    ).scalar() or 0
+    cap = max(1, min(account.posts_per_day, settings.MAX_POSTS_PER_DAY))
+    if published_today >= cap:
+        row.scheduled_at = day_start + timedelta(days=1)
+        row.status = "queued"
+        await db.commit()
+        log.info("Post %s reagendado: teto diario de @%s (%d/dia)", row.id, account.username, cap)
+        return True
+    return False
+
+
+async def collect_post_stats(ctx, account_id: int) -> dict:
+    """Coleta o engajamento dos posts PUBLICADOS da conta (Fase 5 — analytics).
+
+    Abre o perfil da conta no navegador (1 navegacao por conta, sem custo de
+    API) e casa os posts do timeline com os `published_post_id` registrados.
+    Atualiza/insere `PostStats` com snapshot do historico.
+
+    Disparos:
+      - varredura periodica do scheduler (a cada ANALYTICS_SWEEP_SECONDS);
+      - job deferido logo apos cada publicacao (primeira foto do engajamento);
+      - manual, via POST /api/analytics/refresh.
+    """
+    async with SessionLocal() as db:
+        account = await db.get(XAccount, account_id)
+        if not account or not account.is_active or account.auth_method != "browser":
+            return {"skipped": True}
+        if not account.session_state_encrypted:
+            return {"skipped": True}
+
+        window_start = datetime.now(timezone.utc) - timedelta(days=60)
+        rows = (
+            await db.execute(
+                select(ScheduledPost).where(
+                    ScheduledPost.x_account_id == account.id,
+                    ScheduledPost.status == "published",
+                    ScheduledPost.scheduled_at >= window_start,
+                    ScheduledPost.published_post_id != "",
+                )
+            )
+        ).scalars().all()
+        wanted = {r.published_post_id: r for r in rows}
+        if not wanted:
+            return {"skipped": True, "reason": "sem posts publicados"}
+
+        try:
+            async with browser_manager.session(account) as (page, _ctx):
+                if not await x_web.is_logged_in(page):
+                    account.session_valid = False
+                    await db.commit()
+                    log.warning("Coleta de stats: @%s deslogou.", account.username)
+                    return {"session_expired": True}
+                posts = await x_web.fetch_timeline(
+                    page, account.username, max_posts=40
+                )
+        except SessionExpired as exc:
+            account.session_valid = False
+            await db.commit()
+            log.warning("Coleta de stats: sessao de @%s expirada (%s)", account.username, exc)
+            return {"session_expired": True}
+
+        existing = {
+            s.scheduled_post_id: s
+            for s in (
+                await db.execute(
+                    select(PostStats).where(
+                        PostStats.scheduled_post_id.in_([r.id for r in rows])
+                    )
+                )
+            ).scalars().all()
+        }
+
+        now = datetime.now(timezone.utc)
+        updated = 0
+        for p in posts:
+            row = wanted.get(p["x_post_id"])
+            if row is None:
+                continue
+            stat = existing.get(row.id)
+            if stat is None:
+                stat = PostStats(
+                    user_id=account.user_id,
+                    scheduled_post_id=row.id,
+                    x_account_id=account.id,
+                )
+                db.add(stat)
+                existing[row.id] = stat
+            stat.likes, stat.reposts = p["likes"], p["reposts"]
+            stat.replies, stat.views = p["replies"], p["views"]
+            snapshots = list(stat.snapshots or [])
+            snapshots.append(
+                {
+                    "at": now.isoformat(),
+                    "likes": p["likes"],
+                    "reposts": p["reposts"],
+                    "replies": p["replies"],
+                    "views": p["views"],
+                }
+            )
+            stat.snapshots = snapshots[-20:]
+            stat.first_collected_at = stat.first_collected_at or now
+            stat.last_collected_at = now
+            updated += 1
+
+        await db.commit()
+        log.info("Engajamento de @%s: %d/%d posts atualizados", account.username, updated, len(wanted))
+        return {"updated": updated, "tracked": len(wanted)}
+
+
 async def publish_scheduled(ctx, scheduled_id: int) -> dict:
     async with SessionLocal() as db:
         row = await db.get(ScheduledPost, scheduled_id)
@@ -227,6 +388,12 @@ async def publish_scheduled(ctx, scheduled_id: int) -> dict:
             row.status, row.last_error = "failed", "Conta ou conteudo indisponivel"
             await db.commit()
             return {"failed": True}
+
+        # Rate limit interno: se publicar agora violaria o pacing da conta,
+        # reagenda e sai sem publicar (o scheduler redespacha quando vencer).
+        now = datetime.now(timezone.utc)
+        if await _enforce_pacing(db, row, account, now):
+            return {"rescheduled": True}
 
         row.status = "publishing"
         await db.commit()
