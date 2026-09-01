@@ -144,10 +144,18 @@ def _parse_angles(text: str, n: int) -> list[str]:
             if angles:
                 return angles[:n]
         except json.JSONDecodeError:
-            pass
-    # Fallback: uma linha nao vazia por angulo.
+            # JSON truncado/malformado (comum: falta a aspa ou o colchete final
+            # quando o modelo corta a resposta). Recupera so' os itens que SAO
+            # strings bem-formadas — nunca devolve o blob cru com colchetes e
+            # aspas escapando pro texto final do post.
+            quoted = re.findall(r'"((?:[^"\\]|\\.)*)"', match.group(0))
+            angles = [q.strip() for q in quoted if q.strip()]
+            if angles:
+                return angles[:n]
+    # Fallback: uma linha nao vazia por angulo, descartando lixo de JSON solto.
     lines = [re.sub(r"^\s*[-*\d.]+\s*", "", ln).strip() for ln in text.splitlines()]
-    return [ln for ln in lines if ln][:n]
+    lines = [ln for ln in lines if ln and ln[:1] not in "[{\""]
+    return lines[:n]
 
 
 def _build_provider() -> AIProvider:

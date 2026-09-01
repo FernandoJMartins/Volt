@@ -9,6 +9,7 @@ from app.services import scoring
 from app.services.dedup import content_hash, find_conflict, normalize, similarity
 from app.services.scheduling import distribute_slots, fit_window
 from app.services.reword import reword
+from app.services.ai import _parse_angles
 
 
 # ---------------- scoring ----------------
@@ -163,3 +164,21 @@ def test_reword_untouched_text_passes_through() -> None:
     # Nenhuma palavra do dicionario: devolve o texto (so' aparado no limite).
     text = "xyzabc qwerty foobar"
     assert reword(text) == text
+
+
+def test_parse_angles_well_formed_json() -> None:
+    assert _parse_angles('["Angulo um", "Angulo dois"]', 3) == ["Angulo um", "Angulo dois"]
+
+
+def test_parse_angles_truncated_json_recovers_valid_items() -> None:
+    # JSON cortado no meio (modelo parou de gerar): falta a aspa/colchete final
+    # do ultimo item. Deve recuperar so' os itens completos, nunca devolver o
+    # blob cru com colchetes/aspas (bug real observado em producao).
+    broken = '["Primeiro angulo completo", "Segundo tambem completo", "Terceiro cortado sem fechar]'
+    result = _parse_angles(broken, 3)
+    assert result == ["Primeiro angulo completo", "Segundo tambem completo"]
+    assert all("[" not in a and not a.startswith('"') for a in result)
+
+
+def test_parse_angles_plain_text_fallback() -> None:
+    assert _parse_angles("Uma linha qualquer sem JSON", 1) == ["Uma linha qualquer sem JSON"]
