@@ -20,11 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.deps import current_user
-from app.core.security import encrypt
+from app.core.security import decrypt, encrypt
 from app.db import get_db
 from app.models import AuditLog, User, XAccount
 from app.services import x_api, x_web
-from app.services.browser import manager as browser_manager, wrap_state
+from app.services.browser import manager as browser_manager, parse_proxy, wrap_state
 from app.services.cookies import CookieImportError, has_auth_token, parse_cookie_dump
 
 log = logging.getLogger(__name__)
@@ -45,10 +45,24 @@ class AccountSettings(BaseModel):
     window_end: str | None = None
     min_interval_minutes: int | None = None
     categories: list[str] | None = None
+    # Proxy dedicado (http(s)://user:pass@host:port ou socks5://...). String
+    # vazia remove o proxy da conta (volta a sair pelo IP do servidor).
+    proxy_url: str | None = None
+
+
+def _proxy_host(acc: XAccount) -> str:
+    """So o host:porta, pra UI confirmar sem reexibir credenciais."""
+    if not acc.proxy_url_encrypted:
+        return ""
+    try:
+        proxy = parse_proxy(decrypt(acc.proxy_url_encrypted))
+    except Exception:  # noqa: BLE001
+        return ""
+    return proxy["server"].split("://", 1)[-1] if proxy else ""
 
 
 def _serialize(acc: XAccount) -> dict:
-    """Nunca expoe tokens."""
+    """Nunca expoe tokens nem credenciais de proxy."""
     return {
         "id": acc.id,
         "x_user_id": acc.x_user_id,
@@ -65,6 +79,8 @@ def _serialize(acc: XAccount) -> dict:
         "window_end": acc.window_end,
         "min_interval_minutes": acc.min_interval_minutes,
         "auth_method": acc.auth_method,
+        "has_proxy": bool(acc.proxy_url_encrypted),
+        "proxy_host": _proxy_host(acc),
         "session_valid": acc.session_valid,
         "session_updated_at": acc.session_updated_at.isoformat() if acc.session_updated_at else None,
         "connected": bool(acc.access_token_encrypted) or acc.session_valid,
@@ -317,6 +333,19 @@ async def update_account(
         data["posts_per_day"] = max(1, min(data["posts_per_day"], settings.MAX_POSTS_PER_DAY))
     if "min_interval_minutes" in data:
         data["min_interval_minutes"] = max(settings.MIN_INTERVAL_MINUTES, data["min_interval_minutes"])
+
+    # Proxy carrega credencial: nunca vai por setattr direto, sempre criptografado.
+    # String vazia = remove o proxy da conta (volta a sair pelo IP do servidor).
+    if "proxy_url" in data:
+        proxy_url = data.pop("proxy_url").strip()
+        if proxy_url:
+            try:
+                parse_proxy(proxy_url)
+            except ValueError as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+            acc.proxy_url_encrypted = encrypt(proxy_url)
+        else:
+            acc.proxy_url_encrypted = ""
 
     for key, value in data.items():
         setattr(acc, key, value)

@@ -58,6 +58,11 @@ class XAccount(Base):
     session_updated_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     # UA fixo por conta: mantem a "impressao digital" estavel entre sessoes.
     user_agent: Mapped[str] = mapped_column(String(512), default="")
+    # Proxy dedicado da conta (http(s)://user:pass@host:port ou socks5://...).
+    # Cada conta navega pelo seu proprio IP quando preenchido — evita que o X
+    # correlacione contas distintas pelo IP de origem do servidor. Criptografado
+    # em repouso (carrega credencial), nunca devolvido em texto puro pela API.
+    proxy_url_encrypted: Mapped[str] = mapped_column(Text, default="")
 
     timezone: Mapped[str] = mapped_column(String(64), default="America/Sao_Paulo")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

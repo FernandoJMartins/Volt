@@ -118,6 +118,9 @@ export default function Accounts() {
                 <div className="small muted">
                   @{a.username} · {a.posts_per_day}/dia · {a.window_start}–{a.window_end}
                 </div>
+                <div className="small muted">
+                  {a.has_proxy ? `Proxy: ${a.proxy_host || 'configurado'}` : 'Sem proxy — sai pelo IP do servidor'}
+                </div>
               </div>
               <button
                 className="btn ghost sm"
@@ -199,6 +202,28 @@ export default function Accounts() {
                 value={form.window_end ?? '23:00'}
                 onChange={(e) => setForm({ ...form, window_end: e.target.value })}
               />
+            </div>
+          </div>
+
+          <div className="field" style={{ marginTop: 12 }}>
+            <label className="label">
+              Proxy dedicado desta conta {editing.has_proxy && '(configurado)'}
+            </label>
+            <input
+              className="input"
+              type="text"
+              value={form.proxy_url ?? ''}
+              onChange={(e) => setForm({ ...form, proxy_url: e.target.value })}
+              placeholder={
+                editing.has_proxy
+                  ? `atual: ${editing.proxy_host || '(oculto)'} — cole outro pra trocar`
+                  : 'http://usuario:senha@host:porta (opcional)'
+              }
+            />
+            <div className="small muted" style={{ marginTop: 6 }}>
+              Sem proxy, todas as contas saem pelo mesmo IP do servidor — o X pode
+              correlacionar contas por isso. Preencha para essa conta navegar pelo seu
+              próprio IP. Deixe vazio e salve para remover um proxy já configurado.
             </div>
           </div>
 

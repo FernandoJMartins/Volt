@@ -20,6 +20,11 @@ Como a garantia e' obtida
 4. O contexto e' sempre fechado no `finally`. Nada de contexto reaproveitado
    entre contas — a unica coisa compartilhada e' o processo do Chromium no modo
    "context" (particoes ja sao isoladas); no modo "process" nem isso.
+5. IP: por padrao todas as contas saem pelo IP do servidor (cookies/storage
+   ja isolam a sessao, mas nao o IP). Se a conta tiver `proxy_url_encrypted`
+   preenchido, o contexto sobe atras DESSE proxy (`parse_proxy`) — cada conta
+   pode ter seu proprio IP de saida, o que reduz correlacao entre contas do
+   lado do X. Sem proxy configurado, o comportamento e' o mesmo de sempre.
 
 Nada aqui tenta mascarar automacao. O isolamento existe para estabilidade,
 seguranca de sessao e para nao misturar identidades — nao para evadir deteccao.
@@ -30,6 +35,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
@@ -61,6 +67,26 @@ def wrap_state(account_id: int, state: dict) -> str:
         "state": state,
     }
     return encrypt(json.dumps(blob))
+
+
+def parse_proxy(proxy_url: str) -> dict | None:
+    """`http(s)://user:pass@host:port` ou `socks5://...` -> formato do Playwright.
+
+    Credenciais vao separadas do `server` (o Playwright injeta via CDP, nao
+    aceitas na propria URL). None quando a conta nao tem proxy configurado.
+    """
+    if not proxy_url:
+        return None
+    parts = urlsplit(proxy_url)
+    if not parts.hostname:
+        raise ValueError(f"Proxy invalido: {proxy_url!r} (esperado host:porta)")
+    port = f":{parts.port}" if parts.port else ""
+    proxy: dict = {"server": f"{parts.scheme or 'http'}://{parts.hostname}{port}"}
+    if parts.username:
+        proxy["username"] = parts.username
+    if parts.password:
+        proxy["password"] = parts.password
+    return proxy
 
 
 def _load_state(account_id: int, encrypted: str) -> dict | None:
@@ -124,13 +150,14 @@ class BrowserManager:
                 ...  # dirige a pagina
             # ao sair: storage_state salvo criptografado + contexto fechado
 
-        `account` precisa expor: id, session_state_encrypted, user_agent.
-        O storage_state atualizado e' devolvido em `account.session_state_encrypted`
-        para o chamador persistir no banco.
+        `account` precisa expor: id, session_state_encrypted, user_agent,
+        proxy_url_encrypted. O storage_state atualizado e' devolvido em
+        `account.session_state_encrypted` para o chamador persistir no banco.
         """
         lock = await self._lock_for(account.id)
         async with lock:  # serializa a MESMA conta; contas distintas nao se bloqueiam
             state = _load_state(account.id, account.session_state_encrypted or "")
+            proxy = parse_proxy(decrypt(getattr(account, "proxy_url_encrypted", "") or ""))
 
             own_browser: Browser | None = None
             process_mode = settings.BROWSER_ISOLATION == "process"
@@ -152,6 +179,7 @@ class BrowserManager:
                 user_agent=account.user_agent or _DEFAULT_UA,
                 locale=settings.BROWSER_LOCALE,
                 viewport={"width": 1280, "height": 900},
+                proxy=proxy,  # None = sai pelo IP do servidor (sem proxy configurado)
             )
             page: Page = await context.new_page()
             try:

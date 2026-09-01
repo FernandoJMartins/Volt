@@ -48,6 +48,11 @@ export type XAccount = {
   window_end: string
   min_interval_minutes: number
   connected: boolean
+  has_proxy: boolean
+  proxy_host: string
+  /** Escrita apenas (PATCH): http(s)://user:pass@host:port ou socks5://...
+      String vazia remove o proxy. Nunca vem preenchido nas respostas do servidor. */
+  proxy_url?: string
 }
 
 export type MonitoredAccount = {
