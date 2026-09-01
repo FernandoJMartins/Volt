@@ -15,7 +15,9 @@ _SYNONYMS: dict[str, list[str]] = {
     "muito": ["bastante", "demais", "pra caramba"],
     "hoje": ["hoje mesmo", "agora", "neste exato momento"],
     "quero": ["tô querendo", "tô a fim de", "bateu vontade de"],
-    "gosto": ["curto", "adoro", "sou fã de"],
+    # Sem opcoes com preposicao propria (ex: "sou fa de") — "gosto de X" no
+    # original ja tem o "de" depois; juntar os dois duplica ("sou fa de de X").
+    "gosto": ["curto", "adoro"],
     "sempre": ["toda vez", "sem falta", "invariavelmente"],
     "agora": ["nesse instante", "já já", "de cara"],
     "legal": ["massa", "top", "show"],
@@ -27,13 +29,14 @@ _SYNONYMS: dict[str, list[str]] = {
     "ciúme": ["ciuminho", "ciúme besta", "possessividade"],
     "sozinha": ["desacompanhada", "sem companhia", "por conta própria"],
     "sozinho": ["desacompanhado", "sem companhia", "por conta própria"],
+    # Conectores: entram no mesmo dicionario pra reusar o casamento por
+    # PALAVRA INTEIRA de _WORD_RE (\w+) — trocar por substring crua (regex
+    # direta em "e ") pegava pedacos de outras palavras (ex: "hoje" virava
+    # "hojalém disso"). Palavra inteira elimina essa classe de bug.
+    "e": ["e", "e também", "e ainda"],
+    "mas": ["mas", "só que", "porém"],
+    "porque": ["porque", "já que", "pois"],
 }
-
-_CONNECTOR_SWAPS = [
-    ("e ", ["e ", "e também ", "além disso, "]),
-    ("mas ", ["mas ", "só que ", "porém "]),
-    ("porque ", ["porque ", "já que ", "pois "]),
-]
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
@@ -51,9 +54,6 @@ def _swap_word(match: re.Match) -> str:
 
 
 def reword(text: str, limit: int = 280) -> str:
-    """Troca sinonimos conhecidos e varia conectores. Sem match, devolve o texto original."""
-    out = _WORD_RE.sub(_swap_word, text)
-    for needle, options in _CONNECTOR_SWAPS:
-        if needle in out.lower():
-            out = re.sub(re.escape(needle), random.choice(options), out, count=1, flags=re.IGNORECASE)
-    return out.strip()[:limit]
+    """Troca sinonimos e conectores conhecidos, palavra inteira. Sem match, devolve
+    o texto original (so' aparado no limite)."""
+    return _WORD_RE.sub(_swap_word, text).strip()[:limit]
