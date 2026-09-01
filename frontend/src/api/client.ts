@@ -53,6 +53,12 @@ export type XAccount = {
   /** Escrita apenas (PATCH): http(s)://user:pass@host:port ou socks5://...
       String vazia remove o proxy. Nunca vem preenchido nas respostas do servidor. */
   proxy_url?: string
+  /** Piloto automático: gera rascunhos sozinho e agenda no aprovar (sem
+      escolher data/hora), respeitando posts_per_day/janela/cadência 1-2h. */
+  auto_pilot: boolean
+  /** 'ai' (Ollama/Anthropic, mais lento e melhor) ou 'fast' (reescrita local
+      sem IA, instantânea e mais mecânica). Só importa com auto_pilot ligado. */
+  content_mode: 'ai' | 'fast'
 }
 
 export type MonitoredAccount = {

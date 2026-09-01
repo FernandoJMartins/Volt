@@ -25,6 +25,7 @@ TICK_SECONDS = 30
 # se o container reinicia, a varredura roda de novo — coleta a mais é inofensiva
 # (upsert idempotente), coleta a menos é o que a periodicidade corrige.
 _last_analytics_sweep = 0.0
+_last_autopilot_sweep = 0.0
 
 
 async def sweep_analytics(pool) -> None:
@@ -50,6 +51,18 @@ async def sweep_analytics(pool) -> None:
         await pool.enqueue_job("collect_post_stats", account_id)
     if ids:
         log.info("Varredura de analytics: %d conta(s)", len(ids))
+
+
+async def sweep_autopilot(pool) -> None:
+    """A cada AUTOPILOT_SWEEP_SECONDS, enfileira UMA varredura do piloto
+    automatico no worker (nunca roda inline aqui — pode chamar IA e levar
+    minutos, o que travaria o despacho de posts due neste mesmo loop)."""
+    global _last_autopilot_sweep
+    now = time.monotonic()
+    if now - _last_autopilot_sweep < settings.AUTOPILOT_SWEEP_SECONDS:
+        return
+    _last_autopilot_sweep = now
+    await pool.enqueue_job("autopilot_sweep")
 
 
 async def dispatch_due() -> None:
@@ -78,6 +91,7 @@ async def dispatch_due() -> None:
                 await pool.enqueue_job("run_retweet", job_id)
 
         await sweep_analytics(pool)
+        await sweep_autopilot(pool)
 
         if posts or retweets:
             log.info("Despachados %d posts e %d retweets", len(posts), len(retweets))

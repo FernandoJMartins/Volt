@@ -69,5 +69,15 @@ class Settings(BaseSettings):
     # posts publicados (uma navegacao por conta browser conectada).
     ANALYTICS_SWEEP_SECONDS: int = 3600
 
+    # Piloto automatico (opt-in por conta, XAccount.auto_pilot): gera rascunhos
+    # sozinho e agenda no aprovar, sem escolher horario manualmente. Cadencia
+    # padrao 1-2h por conta (o minimo configurado na conta, se maior, prevalece).
+    AUTOPILOT_SWEEP_SECONDS: int = 1800
+    AUTOPILOT_MIN_GAP_MINUTES: int = 60
+    AUTOPILOT_MAX_GAP_MINUTES: int = 120
+    AUTOPILOT_PER_ACCOUNT_CAP: int = 2  # rascunhos novos por conta por varredura
+    AUTOPILOT_AI_TIMEOUT_SECONDS: int = 240  # acima disso, cai pra reescrita rapida
+
 
 settings = Settings()
+

@@ -7,7 +7,8 @@ import pytest
 from app.config import settings
 from app.services import scoring
 from app.services.dedup import content_hash, find_conflict, normalize, similarity
-from app.services.scheduling import distribute_slots
+from app.services.scheduling import distribute_slots, fit_window
+from app.services.reword import reword
 
 
 # ---------------- scoring ----------------
@@ -134,3 +135,31 @@ def test_distribute_slots_edge_cases() -> None:
     # Janela invertida (fim antes do inicio) -> vazio, sem erro.
     assert distribute_slots(datetime(2026, 1, 1), count=5, window_start="20:00",
                             window_end="08:00", min_gap_minutes=30) == []
+
+
+def test_fit_window_before_pushes_to_opening() -> None:
+    moment = datetime(2026, 1, 1, 6, 0)  # antes das 08:00
+    assert fit_window(moment, "08:00", "23:00") == datetime(2026, 1, 1, 8, 0)
+
+
+def test_fit_window_inside_stays_put() -> None:
+    moment = datetime(2026, 1, 1, 14, 30)
+    assert fit_window(moment, "08:00", "23:00") == moment
+
+
+def test_fit_window_after_rolls_to_next_day_opening() -> None:
+    moment = datetime(2026, 1, 1, 23, 30)  # depois das 23:00
+    assert fit_window(moment, "08:00", "23:00") == datetime(2026, 1, 2, 8, 0)
+
+
+def test_reword_stays_within_limit_and_nonempty() -> None:
+    text = "Hoje eu quero muito sair com minha amiga a noite."
+    out = reword(text, limit=280)
+    assert out
+    assert len(out) <= 280
+
+
+def test_reword_untouched_text_passes_through() -> None:
+    # Nenhuma palavra do dicionario: devolve o texto (so' aparado no limite).
+    text = "xyzabc qwerty foobar"
+    assert reword(text) == text

@@ -48,6 +48,9 @@ class AccountSettings(BaseModel):
     # Proxy dedicado (http(s)://user:pass@host:port ou socks5://...). String
     # vazia remove o proxy da conta (volta a sair pelo IP do servidor).
     proxy_url: str | None = None
+    # Piloto automatico: gera rascunhos sozinho e agenda no aprovar (ver autopilot.py).
+    auto_pilot: bool | None = None
+    content_mode: str | None = None
 
 
 def _proxy_host(acc: XAccount) -> str:
@@ -81,6 +84,8 @@ def _serialize(acc: XAccount) -> dict:
         "auth_method": acc.auth_method,
         "has_proxy": bool(acc.proxy_url_encrypted),
         "proxy_host": _proxy_host(acc),
+        "auto_pilot": acc.auto_pilot,
+        "content_mode": acc.content_mode,
         "session_valid": acc.session_valid,
         "session_updated_at": acc.session_updated_at.isoformat() if acc.session_updated_at else None,
         "connected": bool(acc.access_token_encrypted) or acc.session_valid,
@@ -333,6 +338,8 @@ async def update_account(
         data["posts_per_day"] = max(1, min(data["posts_per_day"], settings.MAX_POSTS_PER_DAY))
     if "min_interval_minutes" in data:
         data["min_interval_minutes"] = max(settings.MIN_INTERVAL_MINUTES, data["min_interval_minutes"])
+    if data.get("content_mode") not in (None, "ai", "fast"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "content_mode deve ser 'ai' ou 'fast'")
 
     # Proxy carrega credencial: nunca vai por setattr direto, sempre criptografado.
     # String vazia = remove o proxy da conta (volta a sair pelo IP do servidor).

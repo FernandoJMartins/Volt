@@ -15,7 +15,7 @@ from app.db import get_db
 from app.api.content import load_media_map
 from app.models import AuditLog, ContentCandidate, PostStats, RetweetJob, ScheduledPost, User, XAccount
 from app.services import analytics as an
-from app.services.scheduling import distribute_slots
+from app.services.scheduling import distribute_slots, fit_window
 from app.workers import enqueue
 
 router = APIRouter(prefix="/api", tags=["publishing"])
@@ -199,7 +199,11 @@ async def auto_schedule(
             created.append(slot)
     else:
         while remaining and cursor <= deadline:
-            slot = _fit_window(cursor, account) if body.respect_window else cursor
+            slot = (
+                fit_window(cursor, account.window_start, account.window_end)
+                if body.respect_window
+                else cursor
+            )
             if slot > deadline:
                 break
             candidate = remaining.pop(0)
@@ -295,21 +299,6 @@ async def _optimized_horizon_slots(
         slots.extend(day_slots)
         day += timedelta(days=1)
     return [s for s in slots if cursor < s <= deadline]
-
-
-def _fit_window(moment: datetime, account: XAccount) -> datetime:
-    """Empurra o horario para dentro da janela da conta (ex: 08:00-23:00)."""
-    sh, sm = (int(x) for x in account.window_start.split(":"))
-    eh, em = (int(x) for x in account.window_end.split(":"))
-    start = moment.replace(hour=sh, minute=sm, second=0, microsecond=0)
-    end = moment.replace(hour=eh, minute=em, second=0, microsecond=0)
-
-    if moment < start:
-        return start
-    if moment > end:
-        # Passou da janela: joga para a abertura do dia seguinte.
-        return (start + timedelta(days=1)).replace(hour=sh, minute=sm)
-    return moment
 
 
 @router.patch("/scheduled-posts/{post_id}")

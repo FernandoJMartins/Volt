@@ -3,6 +3,23 @@
 from datetime import datetime, timedelta
 
 
+def fit_window(moment: datetime, window_start: str, window_end: str) -> datetime:
+    """Empurra `moment` pra dentro da janela [window_start, window_end) do MESMO dia.
+
+    Antes da janela -> abertura do dia. Depois -> abertura do dia seguinte.
+    """
+    sh, sm = (int(x) for x in window_start.split(":"))
+    eh, em = (int(x) for x in window_end.split(":"))
+    start = moment.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    end = moment.replace(hour=eh, minute=em, second=0, microsecond=0)
+
+    if moment < start:
+        return start
+    if moment > end:
+        return (start + timedelta(days=1)).replace(hour=sh, minute=sm)
+    return moment
+
+
 def distribute_slots(
     day: datetime,
     count: int,

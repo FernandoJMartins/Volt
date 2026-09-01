@@ -121,6 +121,11 @@ export default function Accounts() {
                 <div className="small muted">
                   {a.has_proxy ? `Proxy: ${a.proxy_host || 'configurado'}` : 'Sem proxy — sai pelo IP do servidor'}
                 </div>
+                {a.auto_pilot && (
+                  <div className="small" style={{ color: 'var(--accent)' }}>
+                    ⚡ Piloto automático ligado ({a.content_mode === 'fast' ? 'reescrita rápida' : 'IA'})
+                  </div>
+                )}
               </div>
               <button
                 className="btn ghost sm"
@@ -225,6 +230,46 @@ export default function Accounts() {
               correlacionar contas por isso. Preencha para essa conta navegar pelo seu
               próprio IP. Deixe vazio e salve para remover um proxy já configurado.
             </div>
+          </div>
+
+          <div className="field" style={{ marginTop: 16 }}>
+            <label className="checkline">
+              <input
+                type="checkbox"
+                checked={form.auto_pilot ?? false}
+                onChange={(e) => setForm({ ...form, auto_pilot: e.target.checked })}
+              />
+              <span>Piloto automático</span>
+            </label>
+            <div className="small muted" style={{ marginTop: 4 }}>
+              Gera rascunhos sozinho quando a fila de hoje está abaixo do teto ({form.posts_per_day ?? 8}
+              /dia) e, ao você aprovar, já agenda no próximo horário livre (a cada 1-2h, respeitando o
+              intervalo mínimo e a janela desta conta) — sem escolher data/hora na mão. Continua exigindo
+              sua aprovação manual em Conteúdo; nunca publica nada sozinho.
+            </div>
+
+            {(form.auto_pilot ?? false) && (
+              <div className="row" style={{ gap: 12, marginTop: 10 }}>
+                <label className="checkline">
+                  <input
+                    type="radio"
+                    name="content_mode"
+                    checked={(form.content_mode ?? 'ai') === 'ai'}
+                    onChange={() => setForm({ ...form, content_mode: 'ai' })}
+                  />
+                  <span>Texto por IA (mais lento, melhor qualidade)</span>
+                </label>
+                <label className="checkline">
+                  <input
+                    type="radio"
+                    name="content_mode"
+                    checked={form.content_mode === 'fast'}
+                    onChange={() => setForm({ ...form, content_mode: 'fast' })}
+                  />
+                  <span>Reescrita rápida (sem IA, instantânea, mais mecânica)</span>
+                </label>
+              </div>
+            )}
           </div>
 
           <label className="checkline" style={{ marginTop: 16 }}>

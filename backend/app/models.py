@@ -78,6 +78,14 @@ class XAccount(Base):
     window_end: Mapped[str] = mapped_column(String(5), default="23:00")
     min_interval_minutes: Mapped[int] = mapped_column(Integer, default=30)
 
+    # Piloto automatico (opt-in, default OFF): a varredura periodica gera
+    # rascunhos sozinha (respeitando posts_per_day/janela) e o aprovar ja agenda
+    # pro proximo horario livre — sem escolher data/hora manualmente.
+    auto_pilot: Mapped[bool] = mapped_column(Boolean, default=False)
+    # "ai" (Ollama/Anthropic, mais lento e melhor) ou "fast" (reescrita local
+    # sem IA, instantanea e mais mecanica). So' importa com auto_pilot ligado.
+    content_mode: Mapped[str] = mapped_column(String(8), default="ai")
+
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
     # Unicidade PARCIAL: so vale quando ha x_user_id real (conta conectada).

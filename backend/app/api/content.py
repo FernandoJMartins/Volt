@@ -20,11 +20,13 @@ from app.models import (
     ContentCandidate,
     ManualSourceText,
     MediaAsset,
+    ScheduledPost,
     SourcePost,
     User,
     XAccount,
 )
-from app.services import ai, bulk, dedup
+from app.services import ai, autopilot, bulk, dedup
+from app.workers import enqueue
 
 router = APIRouter(prefix="/api/content", tags=["content"])
 
@@ -597,7 +599,28 @@ async def approve(
             detail={"account_id": c.target_x_account_id, "origin": c.origin},
         )
     )
+
+    # Piloto automatico: aprovar ja agenda no proximo horario livre da conta
+    # (cadencia de 1-2h, teto diario, janela) — sem escolher data/hora a mao.
+    scheduled_row = None
+    account = await db.get(XAccount, c.target_x_account_id) if c.target_x_account_id else None
+    if account and account.auto_pilot:
+        slot = await autopilot.next_auto_slot(db, account)
+        scheduled_row = ScheduledPost(
+            user_id=user.id,
+            x_account_id=account.id,
+            content_candidate_id=c.id,
+            scheduled_at=slot,
+        )
+        c.status = "scheduled"
+        db.add(scheduled_row)
+
     await db.commit()
+    if scheduled_row is not None:
+        await db.refresh(scheduled_row)
+        if slot <= datetime.now(timezone.utc) + timedelta(seconds=5):
+            await enqueue("publish_scheduled", scheduled_row.id)
+
     media = await load_media_map(db, [c.id])
     return _serialize(c, media.get(c.id, []))
 

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from arq import create_pool
 from arq.connections import RedisSettings
+from arq.worker import func as arq_func
 from sqlalchemy import func, select
 
 from app.config import settings
@@ -26,7 +27,7 @@ from app.models import (
     SourcePost,
     XAccount,
 )
-from app.services import media_source, scoring, sources, x_api, x_web
+from app.services import autopilot, media_source, scoring, sources, x_api, x_web
 from app.services.browser import SessionExpired, manager as browser_manager
 from app.services.dedup import content_hash
 from app.services.storage import storage
@@ -488,6 +489,19 @@ async def publish_scheduled(ctx, scheduled_id: int) -> dict:
             return {"error": str(exc)}
 
 
+async def autopilot_sweep(ctx) -> dict:
+    """Varredura periodica do piloto automatico (contas com auto_pilot=True):
+    gera rascunhos novos pra quem esta com a fila de hoje abaixo do teto.
+    Pode chamar IA local (minutos por post neste hardware) — por isso roda
+    aqui no worker (nao no loop de 30s do scheduler) e com timeout proprio
+    (ver WorkerSettings.functions)."""
+    async with SessionLocal() as db:
+        result = await autopilot.sweep(db)
+        if result["created"]:
+            log.info("autopilot_sweep: %s", result)
+        return result
+
+
 async def run_retweet(ctx, job_id: int) -> dict:
     async with SessionLocal() as db:
         job = await db.get(RetweetJob, job_id)
@@ -543,7 +557,16 @@ async def run_retweet(ctx, job_id: int) -> dict:
 
 
 class WorkerSettings:
-    functions = [collect_account, collect_all, collect_post_stats, publish_scheduled, run_retweet]
+    functions = [
+        collect_account,
+        collect_all,
+        collect_post_stats,
+        publish_scheduled,
+        run_retweet,
+        # Pode chamar IA local varias vezes em sequencia (minutos cada nesse
+        # hardware) — timeout bem mais folgado que o padrao dos demais jobs.
+        arq_func(autopilot_sweep, timeout=1800),
+    ]
     redis_settings = _redis_settings()
     max_jobs = 10
     job_timeout = 300
