@@ -385,6 +385,21 @@ async def publish(page: Page, text: str, media_paths: list[str] | None = None) -
             SEL["file_input"], timeout=10000, state="attached"
         )
         await file_input.set_input_files(media_paths)
+        # Race: o X so marca aria-disabled=true ~1s depois do set_input_files
+        # (o React ainda nao re-renderizou). Sem esperar o botao DESABILITAR
+        # primeiro, a checagem abaixo podia rodar nesse intervalo, achar o
+        # botao ainda "pronto" e clicar Postar ANTES da midia anexar de fato
+        # — bug real observado: post saia so com texto, sem a midia.
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const b = document.querySelector('[data-testid="tweetButton"]');
+                    return !!b && (b.getAttribute('aria-disabled') === 'true' || b.disabled);
+                }""",
+                timeout=5000,
+            )
+        except PWTimeout:
+            pass  # upload/imagem pequena o suficiente para ja ter terminado
         # Upload de midia: o botao de postar so habilita quando termina.
         deadline = asyncio.get_event_loop().time() + 180
         ready = False
