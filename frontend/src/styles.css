@@ -596,6 +596,12 @@ a {
   background: var(--accent-soft);
 }
 
+.banner.warning {
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

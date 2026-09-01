@@ -61,8 +61,11 @@ class Settings(BaseSettings):
     # falso positivo; descer = pega mais parafrase.
     SIMILARITY_THRESHOLD: float = 0.75
 
-    # Guarda-corpo anti-spam (nao configuravel pelo usuario para valores absurdos)
-    MAX_POSTS_PER_DAY: int = 24
+    # Guarda-corpo anti-spam (nao configuravel pelo usuario para valores absurdos).
+    # Quem decide o volume e' o usuario — o teto so existe pra barrar valor
+    # absurdo (ex: 500/dia); a UI avisa (nao bloqueia) acima de POSTS_PER_DAY_WARN.
+    MAX_POSTS_PER_DAY: int = 30
+    POSTS_PER_DAY_WARN: int = 20
     MIN_INTERVAL_MINUTES: int = 15
 
     # Analytics (Fase 5): intervalo da varredura periodica de engajamento dos

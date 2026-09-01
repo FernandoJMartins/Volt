@@ -170,7 +170,7 @@ export default function Accounts() {
                 className="input"
                 type="number"
                 min={1}
-                max={24}
+                max={30}
                 value={form.posts_per_day ?? 8}
                 onChange={(e) => setForm({ ...form, posts_per_day: Number(e.target.value) })}
               />
@@ -188,6 +188,14 @@ export default function Accounts() {
               />
             </div>
           </div>
+
+          {(form.posts_per_day ?? 8) > 20 && (
+            <div className="banner warning" style={{ margin: '10px 0 0' }}>
+              {form.posts_per_day}/dia é volume alto. Sem proxy dedicado pra essa conta, isso
+              aumenta o risco de ela ser sinalizada/suspensa pelo X — considere configurar um
+              proxy (mais abaixo) ou baixar o valor se a conta for nova.
+            </div>
+          )}
 
           <div className="row" style={{ gap: 12, marginTop: 12 }}>
             <div style={{ flex: 1 }}>
