@@ -239,23 +239,32 @@ async def fetch_media_entities(page: Page, status_id: str, username: str) -> lis
         page.on("request", on_request)
         await page.goto(f"{BASE}/{handle}/status/{status_id}", wait_until="domcontentloaded")
         try:
-            await page.wait_for_selector(SEL["video"], timeout=10000)
+            await page.wait_for_selector(SEL["tweet"], timeout=10000)
         except PWTimeout:
-            pass  # sem <video>: foto ou tweet sem midia
+            pass  # sem article nenhum carregado: tweet deletado/protegido
+
+        # O tweet PRINCIPAL e' sempre o primeiro article[data-testid="tweet"] da
+        # pagina de detalhe — as respostas/comentarios vem depois, como articles
+        # separados. Escopar tudo (video a tocar, fotos a extrair) a esse
+        # elemento evita pegar midia de comentario junto com a do post puxado
+        # (bug real visto em producao: fotos de resposta entravam como se
+        # fossem do post da conta monitorada).
+        main_article = await page.query_selector(SEL["tweet"])
 
         # Forca o player a iniciar (sem autoplay ele nao pede o manifesto).
-        await page.evaluate(
-            """() => {
-                const v = document.querySelector('video');
-                if (v) {
-                    v.scrollIntoView({ block: 'center' });
-                    v.muted = true;
-                    v.play().catch(() => {});
-                }
-                const comp = document.querySelector('[data-testid="videoComponent"]');
-                if (comp && comp !== v) comp.click();
-            }"""
-        )
+        if main_article:
+            await main_article.evaluate(
+                """(el) => {
+                    const v = el.querySelector('video');
+                    if (v) {
+                        v.scrollIntoView({ block: 'center' });
+                        v.muted = true;
+                        v.play().catch(() => {});
+                    }
+                    const comp = el.querySelector('[data-testid="videoComponent"]');
+                    if (comp && comp !== v) comp.click();
+                }"""
+            )
         # Aguarda o manifesto HLS aparecer na rede (poll, nao sleep fixo).
         deadline = asyncio.get_event_loop().time() + 12
         while not captured and asyncio.get_event_loop().time() < deadline:
@@ -278,16 +287,22 @@ async def fetch_media_entities(page: Page, status_id: str, username: str) -> lis
                 }
             )
 
-        # Fotos da propria midia do tweet (avatares e posters ficam de fora).
-        photos = await page.evaluate(
-            """() => {
-                const out = [];
-                for (const img of document.querySelectorAll('img[src*="pbs.twimg.com/media"]')) {
-                    const url = img.src.split('?')[0];
-                    if (!out.includes(url)) out.push(url);
-                }
-                return out;
-            }"""
+        # Fotos da propria midia do tweet PRINCIPAL (avatares, posters e midia
+        # de comentario/resposta ficam de fora — escopado ao article, nao ao
+        # document inteiro).
+        photos = (
+            await main_article.evaluate(
+                """(el) => {
+                    const out = [];
+                    for (const img of el.querySelectorAll('img[src*="pbs.twimg.com/media"]')) {
+                        const url = img.src.split('?')[0];
+                        if (!out.includes(url)) out.push(url);
+                    }
+                    return out;
+                }"""
+            )
+            if main_article
+            else []
         )
         for url in photos[:4]:
             entities.append(
