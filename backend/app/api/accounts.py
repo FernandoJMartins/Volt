@@ -126,6 +126,22 @@ class CookieImportBody(BaseModel):
     platform: str = "x"
 
 
+def _resolve_account_key(identity: dict | None) -> str:
+    """x_user_id que vai "formar" a conta (sair do estado pendente).
+
+    Prefere o id numerico resolvido pela plataforma; sem ele (fallback sem API
+    interna — comum em IP de datacenter), usa o username como chave estavel.
+    "" so' quando nem o username resolveu — a conta continua pendente, pronta
+    pra uma nova tentativa de import (nao "trava" pendente pra sempre, mas
+    tambem nao fica disponivel pra ser reaproveitada por engano por OUTRA
+    conta — ver bug historico no docstring de _import_cookies_into).
+    """
+    resolved = (identity or {}).get("x_user_id") or ""
+    if not resolved and identity and identity.get("username"):
+        resolved = f"u:{identity['username'].lower()}"
+    return resolved
+
+
 async def _import_cookies_into(
     account: Account, cookies_text: str, db: AsyncSession
 ) -> dict:
@@ -137,6 +153,16 @@ async def _import_cookies_into(
     (mesmo que antes estivesse valida).
 
     Levanta CookieImportError (vira 400) antes de qualquer efeito colateral.
+
+    BUG CRITICO ja visto em producao (multi-account quebrado): antes desta
+    funcao usar `_resolve_account_key`, quando so' dava pra resolver o
+    username (fallback sem API interna, comum em IP de datacenter) o
+    x_user_id nunca ficava preenchido — a conta ficava "pendente" pra sempre
+    e a PROXIMA importacao de cookies de QUALQUER outra conta reaproveitava
+    essa MESMA linha (ver query de "conta pendente" em browser_import_cookies),
+    sobrescrevendo silenciosamente a sessao/identidade da conta anterior em
+    vez de criar uma conta nova. Efeito visto: importar a 2a conta "substituia"
+    a 1a em vez de adicionar.
     """
     driver = platform_web.driver_for(account.platform)
     state = parse_cookie_dump(cookies_text, platform=account.platform)
@@ -177,24 +203,26 @@ async def _import_cookies_into(
     account.session_valid = valid
     if identity and identity.get("username"):
         account.username = identity["username"]
-    if identity and identity.get("x_user_id"):
+
+    resolved_id = _resolve_account_key(identity)
+    if resolved_id:
         # Unicidade parcial (user_id, x_user_id): se o id resolvido ja pertence a
         # outra conta do mesmo usuario, mantem o placeholder em vez de explodir.
         dup = await db.execute(
             select(Account.id).where(
                 Account.user_id == account.user_id,
-                Account.x_user_id == identity["x_user_id"],
+                Account.x_user_id == resolved_id,
                 Account.id != account.id,
             )
         )
         if dup.first() is None:
-            account.x_user_id = identity["x_user_id"]
+            account.x_user_id = resolved_id
         else:
             log.warning(
                 "Conta %s: identidade %s ja pertence a outra conta do usuario; "
                 "x_user_id mantido",
                 account.id,
-                identity["x_user_id"],
+                resolved_id,
             )
 
     db.add(

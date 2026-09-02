@@ -11,6 +11,7 @@ from app.services.scheduling import distribute_slots, fit_window
 from app.services.reword import reword
 from app.services.ai import _parse_angles
 from app.services.links import replace_telegram_links
+from app.api.accounts import _resolve_account_key
 
 
 # ---------------- scoring ----------------
@@ -259,3 +260,24 @@ def test_replace_telegram_links_leaves_other_domains_untouched() -> None:
 def test_replace_telegram_links_noop_without_redirect_url() -> None:
     text = "grupo em https://t.me/exemplo"
     assert replace_telegram_links(text, "") == text
+
+
+# ---------------- _resolve_account_key (bug critico: multi-account) ----------------
+
+
+def test_resolve_account_key_prefers_numeric_id() -> None:
+    assert _resolve_account_key({"username": "fulano", "x_user_id": "123456"}) == "123456"
+
+
+def test_resolve_account_key_falls_back_to_username() -> None:
+    # Regressao do bug real: sem id numerico (fallback sem API interna), a
+    # conta NUNCA PODE ficar com x_user_id vazio — senao a proxima importacao
+    # de cookies de outra conta reaproveita essa mesma linha por engano.
+    assert _resolve_account_key({"username": "Fulano"}) == "u:fulano"
+
+
+def test_resolve_account_key_empty_identity_stays_pending() -> None:
+    # So' fica "" quando nem o username resolveu (cookies invalidos) — aqui
+    # sim faz sentido manter a conta pendente pra uma nova tentativa.
+    assert _resolve_account_key({}) == ""
+    assert _resolve_account_key(None) == ""
