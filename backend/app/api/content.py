@@ -588,7 +588,13 @@ async def approve(
                 "seu antes de aprovar (em Mídia, marque como própria ou licenciada).",
             )
 
-    conflict = await _check_cross_posting(db, user.id, c.generated_text, c.target_account_id)
+    # Opcional (configuracoes gerais): desligado, aprova sem checar
+    # similaridade com conteudo ja usado em outra conta.
+    conflict = (
+        await _check_cross_posting(db, user.id, c.generated_text, c.target_account_id)
+        if user.cross_posting_check_enabled
+        else None
+    )
     if conflict:
         c.status = "blocked"
         c.block_reason = (

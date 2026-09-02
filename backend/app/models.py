@@ -29,6 +29,12 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    # Configuracao geral (nao por conta): bloqueia aprovar conteudo
+    # substancialmente similar ao ja usado em OUTRA conta do usuario (ver
+    # dedup.find_conflict / content.py::_check_cross_posting). Default ligado
+    # (comportamento historico); opcional pra quem prefere aprovar sem essa
+    # trava.
+    cross_posting_check_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
 

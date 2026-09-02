@@ -60,4 +60,26 @@ async def logout(response: Response):
 
 @router.get("/me")
 async def me(user: User = Depends(current_user)):
-    return {"id": user.id, "email": user.email}
+    return {
+        "id": user.id,
+        "email": user.email,
+        "cross_posting_check_enabled": user.cross_posting_check_enabled,
+    }
+
+
+class SettingsIn(BaseModel):
+    cross_posting_check_enabled: bool | None = None
+
+
+@router.patch("/settings")
+async def update_settings(
+    body: SettingsIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
+):
+    if body.cross_posting_check_enabled is not None:
+        user.cross_posting_check_enabled = body.cross_posting_check_enabled
+    await db.commit()
+    return {
+        "id": user.id,
+        "email": user.email,
+        "cross_posting_check_enabled": user.cross_posting_check_enabled,
+    }

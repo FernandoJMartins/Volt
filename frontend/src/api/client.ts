@@ -226,8 +226,12 @@ export type SourceAnalytics = {
 
 // ---------- Endpoints ----------
 
+export type Me = { id: number; email: string; cross_posting_check_enabled: boolean }
+
 export const api = {
-  me: () => get<{ id: number; email: string }>('/auth/me'),
+  me: () => get<Me>('/auth/me'),
+  updateSettings: (body: { cross_posting_check_enabled?: boolean }) =>
+    patch<Me>('/auth/settings', body),
   login: (email: string, password: string) =>
     post<{ id: number }>('/auth/login', { email, password }),
   register: (email: string, password: string) =>
