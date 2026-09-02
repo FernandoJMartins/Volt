@@ -2,15 +2,16 @@
 
 import asyncio
 import logging
+import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from arq import create_pool
 from sqlalchemy import select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import RetweetJob, ScheduledPost, XAccount
+from app.models import Account, MonitoredAccount, RetweetJob, ScheduledPost
 from app.services.scheduling import distribute_slots  # noqa: F401  (reexport util)
 from app.workers import _redis_settings
 
@@ -26,6 +27,7 @@ TICK_SECONDS = 30
 # (upsert idempotente), coleta a menos é o que a periodicidade corrige.
 _last_analytics_sweep = 0.0
 _last_autopilot_sweep = 0.0
+_last_collection_sweep = 0.0
 
 
 async def sweep_analytics(pool) -> None:
@@ -40,10 +42,10 @@ async def sweep_analytics(pool) -> None:
     async with SessionLocal() as db:
         ids = (
             await db.execute(
-                select(XAccount.id).where(
-                    XAccount.is_active.is_(True),
-                    XAccount.auth_method == "browser",
-                    XAccount.session_valid.is_(True),
+                select(Account.id).where(
+                    Account.is_active.is_(True),
+                    Account.auth_method == "browser",
+                    Account.session_valid.is_(True),
                 )
             )
         ).scalars().all()
@@ -63,6 +65,54 @@ async def sweep_autopilot(pool) -> None:
         return
     _last_autopilot_sweep = now
     await pool.enqueue_job("autopilot_sweep")
+
+
+async def sweep_collection(pool) -> None:
+    """A cada COLLECTION_SWEEP_SECONDS, enfileira a coleta das fontes monitoradas
+    (X e Threads) que estao devidas — sem precisar clicar em "Coletar".
+
+    Cadencia por fonte e' ~1x/dia mas com jitter (ver COLLECTION_INTERVAL_MIN/
+    MAX_HOURS e workers.collect_account): de proposito nunca cai num horario
+    redondo fixo, pra nao parecer um robo previsivel.
+    """
+    global _last_collection_sweep
+    now_mono = time.monotonic()
+    if now_mono - _last_collection_sweep < settings.COLLECTION_SWEEP_SECONDS:
+        return
+    _last_collection_sweep = now_mono
+
+    now = datetime.now(timezone.utc)
+    async with SessionLocal() as db:
+        due = (
+            await db.execute(
+                select(MonitoredAccount).where(
+                    MonitoredAccount.is_active.is_(True),
+                    (MonitoredAccount.next_collect_at.is_(None))
+                    | (MonitoredAccount.next_collect_at <= now),
+                )
+            )
+        ).scalars().all()
+        for account in due:
+            # Marca otimisticamente antes de enfileirar — evita reenfileirar a
+            # mesma fonte na proxima varredura enquanto o job ainda roda/falha.
+            # collect_account recalcula com jitter de verdade ao terminar.
+            account.next_collect_at = now + timedelta(
+                hours=random.uniform(
+                    settings.COLLECTION_INTERVAL_MIN_HOURS, settings.COLLECTION_INTERVAL_MAX_HOURS
+                )
+            )
+        await db.commit()
+
+    # Espalha os disparos no tempo — contas da mesma plataforma competem pelo
+    # lock da conta-leitora (browser.py); mandar tudo junto so' empilha jobs
+    # esperando o lock ate estourar o timeout. Tambem fica mais "gente" que
+    # "robo despejando tudo no mesmo segundo".
+    defer = 0
+    for account in due:
+        await pool.enqueue_job("collect_account", account.id, _defer_by=defer)
+        defer += random.randint(60, 180)
+    if due:
+        log.info("Varredura de coleta: %d fonte(s)", len(due))
 
 
 async def dispatch_due() -> None:
@@ -92,6 +142,7 @@ async def dispatch_due() -> None:
 
         await sweep_analytics(pool)
         await sweep_autopilot(pool)
+        await sweep_collection(pool)
 
         if posts or retweets:
             log.info("Despachados %d posts e %d retweets", len(posts), len(retweets))

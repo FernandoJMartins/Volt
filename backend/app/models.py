@@ -32,12 +32,20 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
 
-class XAccount(Base):
-    """Conta do X conectada via OAuth. Tokens sempre criptografados."""
+class Account(Base):
+    """Conta de publicacao numa plataforma (X ou Threads). Tokens sempre criptografados.
 
-    __tablename__ = "x_accounts"
+    `platform` decide qual page-driver (app.services.platform_web) e' usado pra
+    automacao de navegador. `x_user_id` guarda o id numerico da conta NA
+    PLATAFORMA dela (nome mantido por compatibilidade com o schema antigo,
+    quando so' existia X).
+    """
+
+    __tablename__ = "accounts"
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # "x" ou "threads".
+    platform: Mapped[str] = mapped_column(String(16), default="x")
     x_user_id: Mapped[str] = mapped_column(String(64), index=True)
     username: Mapped[str] = mapped_column(String(64))
     display_name: Mapped[str] = mapped_column(String(128), default="")
@@ -66,11 +74,18 @@ class XAccount(Base):
 
     timezone: Mapped[str] = mapped_column(String(64), default="America/Sao_Paulo")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Regra "todo post precisa de midia" (era so' settings.MEDIA_REQUIRED global):
+    # agora e' por conta, porque Threads nao exige midia em todo post como o X.
+    media_required: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Identidade propria da conta (evita que virem copias umas das outras)
     persona_prompt: Mapped[str] = mapped_column(Text, default="")
     categories: Mapped[list] = mapped_column(JSON, default=list)
     is_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Link proprio da conta (ex: pagina no Spectrum Red). Quando preenchido,
+    # qualquer link do Telegram (t.me/telegram.me/telegram.dog) no texto
+    # copiado de uma fonte e' trocado por este link — ver app/services/links.py.
+    redirect_url: Mapped[str] = mapped_column(String(512), default="")
 
     # Janela de publicacao
     posts_per_day: Mapped[int] = mapped_column(Integer, default=8)
@@ -82,9 +97,11 @@ class XAccount(Base):
     # rascunhos sozinha (respeitando posts_per_day/janela) e o aprovar ja agenda
     # pro proximo horario livre — sem escolher data/hora manualmente.
     auto_pilot: Mapped[bool] = mapped_column(Boolean, default=False)
-    # "ai" (Ollama/Anthropic, mais lento e melhor) ou "fast" (reescrita local
-    # sem IA, instantanea e mais mecanica). So' importa com auto_pilot ligado.
-    content_mode: Mapped[str] = mapped_column(String(8), default="ai")
+    # "fast" (reescrita local sem IA — sinonimos + case invertido, default e modo
+    # PRINCIPAL) ou "ai" (Ollama/Anthropic, mais lento). So' importa com
+    # auto_pilot ligado. Contas criadas antes dessa mudanca mantem o valor que
+    # ja tinham salvo.
+    content_mode: Mapped[str] = mapped_column(String(8), default="fast")
 
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
@@ -94,7 +111,7 @@ class XAccount(Base):
     # de login do mesmo usuario (duplicate key em (user_id, '')).
     __table_args__ = (
         Index(
-            "uq_user_xaccount",
+            "uq_user_account",
             "user_id",
             "x_user_id",
             unique=True,
@@ -109,6 +126,8 @@ class MonitoredAccount(Base):
     __tablename__ = "monitored_accounts"
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # "x" ou "threads" — de qual plataforma essa fonte e' lida.
+    platform: Mapped[str] = mapped_column(String(16), default="x")
     x_user_id: Mapped[str] = mapped_column(String(64), default="")
     username: Mapped[str] = mapped_column(String(64))
     display_name: Mapped[str] = mapped_column(String(128), default="")
@@ -118,6 +137,10 @@ class MonitoredAccount(Base):
     # a coleta e' IDEMPOTENTE: posts ja' coletados nao duplicam nem rebaixam midia.
     posts_per_collect: Mapped[int] = mapped_column(Integer, default=15)
     last_collected_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    # Proxima coleta automatica (sweep periodico no scheduler). None = devida
+    # imediatamente (fonte nova, ou nunca coletada). Recalculado com jitter a
+    # cada coleta — ver COLLECTION_INTERVAL_MIN/MAX_HOURS.
+    next_collect_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     last_seen_post_id: Mapped[str] = mapped_column(String(64), default="")
     # Media movel de engajamento — base do score relativo
     engagement_baseline: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -138,11 +161,13 @@ class ManualSourceText(Base):
 
 
 class SourcePost(Base):
-    """Post coletado. x_post_id UNIQUE impede processamento duplicado."""
+    """Post coletado. platform_post_id UNIQUE impede processamento duplicado."""
 
     __tablename__ = "source_posts"
     id: Mapped[int] = mapped_column(primary_key=True)
-    x_post_id: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+    # "x" ou "threads".
+    platform: Mapped[str] = mapped_column(String(16), default="x")
+    platform_post_id: Mapped[str] = mapped_column(String(96), unique=True, index=True)
     monitored_account_id: Mapped[int | None] = mapped_column(
         ForeignKey("monitored_accounts.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -177,8 +202,8 @@ class ContentCandidate(Base):
     source_post_id: Mapped[int | None] = mapped_column(
         ForeignKey("source_posts.id", ondelete="SET NULL"), nullable=True
     )
-    target_x_account_id: Mapped[int | None] = mapped_column(
-        ForeignKey("x_accounts.id", ondelete="CASCADE"), nullable=True, index=True
+    target_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), nullable=True, index=True
     )
 
     generated_text: Mapped[str] = mapped_column(Text)
@@ -195,14 +220,14 @@ class ContentCandidate(Base):
     approved_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
 
-    account = relationship("XAccount", lazy="joined")
+    account = relationship("Account", lazy="joined")
 
 
 class ScheduledPost(Base):
     __tablename__ = "scheduled_posts"
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    x_account_id: Mapped[int] = mapped_column(ForeignKey("x_accounts.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
     content_candidate_id: Mapped[int] = mapped_column(
         ForeignKey("content_candidates.id", ondelete="CASCADE")
     )
@@ -215,7 +240,7 @@ class ScheduledPost(Base):
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
     candidate = relationship("ContentCandidate", lazy="joined")
-    account = relationship("XAccount", lazy="joined")
+    account = relationship("Account", lazy="joined")
 
 
 class RetweetJob(Base):
@@ -225,11 +250,13 @@ class RetweetJob(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     source_tweet_id: Mapped[str] = mapped_column(String(64))
+    # Nomes de coluna mantidos (retweet e' conceito X-only, fora do escopo da
+    # generalizacao pra Threads) — so' o alvo do FK mudou com o rename da tabela.
     origin_x_account_id: Mapped[int | None] = mapped_column(
-        ForeignKey("x_accounts.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True
     )
     target_x_account_id: Mapped[int] = mapped_column(
-        ForeignKey("x_accounts.id", ondelete="CASCADE"), index=True
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
     )
     scheduled_at: Mapped[datetime] = mapped_column(TS, index=True)
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
@@ -238,7 +265,7 @@ class RetweetJob(Base):
     retweet_id: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
 
-    target = relationship("XAccount", foreign_keys=[target_x_account_id], lazy="joined")
+    target = relationship("Account", foreign_keys=[target_x_account_id], lazy="joined")
 
 
 class MediaAsset(Base):
@@ -293,7 +320,7 @@ class AIGeneration(Base):
         ForeignKey("source_posts.id", ondelete="SET NULL"), nullable=True
     )
     target_account_id: Mapped[int | None] = mapped_column(
-        ForeignKey("x_accounts.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True
     )
     prompt: Mapped[str] = mapped_column(Text)
     response: Mapped[str] = mapped_column(Text)
@@ -334,8 +361,8 @@ class PostStats(Base):
     scheduled_post_id: Mapped[int] = mapped_column(
         ForeignKey("scheduled_posts.id", ondelete="CASCADE"), unique=True, index=True
     )
-    x_account_id: Mapped[int] = mapped_column(
-        ForeignKey("x_accounts.id", ondelete="CASCADE"), index=True
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
     )
 
     likes: Mapped[int] = mapped_column(Integer, default=0)

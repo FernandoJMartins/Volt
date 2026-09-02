@@ -7,8 +7,10 @@ import {
   MediaStrip,
   Modal,
   Pill,
+  PlatformTabs,
   TopBar,
   formatDate,
+  usePlatformTab,
 } from '../components/ui'
 
 const TABS = [
@@ -20,6 +22,7 @@ const TABS = [
 
 export default function Inbox() {
   const [tab, setTab] = useState('pending')
+  const [platform, setPlatform] = usePlatformTab()
   const [items, setItems] = useState<Candidate[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -37,9 +40,12 @@ export default function Inbox() {
   const [respectWindow, setRespectWindow] = useState(true)
   const [strategy, setStrategy] = useState<'spread' | 'optimized'>('spread')
 
+  const visible = items.filter((c) => c.platform === platform)
+
   async function autoScheduleAll() {
-    // Agenda por conta, respeitando a janela e o limite diario de cada uma.
-    const accountIds = [...new Set(items.map((i) => i.target_x_account_id).filter(Boolean))]
+    // Agenda por conta, respeitando a janela e o limite diario de cada uma —
+    // so' as contas da plataforma que esta' sendo vista na aba.
+    const accountIds = [...new Set(visible.map((i) => i.target_x_account_id).filter(Boolean))]
     if (!accountIds.length) return
 
     setAutoBusy(true)
@@ -117,6 +123,8 @@ export default function Inbox() {
     <>
       <TopBar title="Conteúdo" />
 
+      <PlatformTabs value={platform} onChange={setPlatform} />
+
       <div className="tabs">
         {TABS.map((t) => (
           <div
@@ -132,9 +140,9 @@ export default function Inbox() {
       {error && <ErrorBanner message={error} />}
       {notice && <div className="banner info">{notice}</div>}
 
-      {tab === 'approved' && items.length > 0 && (
+      {tab === 'approved' && visible.length > 0 && (
         <div className="row" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
-          <span className="small muted">{items.length} aprovado(s) aguardando agendamento</span>
+          <span className="small muted">{visible.length} aprovado(s) aguardando agendamento</span>
           <button
             className="btn sm"
             style={{ marginLeft: 'auto' }}
@@ -148,10 +156,10 @@ export default function Inbox() {
 
       {loading ? (
         <Loading />
-      ) : items.length === 0 ? (
+      ) : visible.length === 0 ? (
         <Empty title="Nada por aqui" hint="Crie conteúdo a partir de um post no Início." />
       ) : (
-        items.map((c) => (
+        visible.map((c) => (
           <div className="card" key={c.id}>
             <div className="row" style={{ marginBottom: 8 }}>
               <span className="bold">@{c.account_username ?? '—'}</span>

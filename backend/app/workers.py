@@ -5,6 +5,7 @@ do reset informado pela propria API.
 """
 
 import logging
+import random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -17,6 +18,7 @@ from app.config import settings
 from app.core.security import decrypt, encrypt
 from app.db import SessionLocal
 from app.models import (
+    Account,
     AuditLog,
     CandidateMedia,
     ContentCandidate,
@@ -25,9 +27,8 @@ from app.models import (
     RetweetJob,
     ScheduledPost,
     SourcePost,
-    XAccount,
 )
-from app.services import autopilot, media_source, scoring, sources, x_api, x_web
+from app.services import autopilot, media_source, platform_web, scoring, sources, x_api
 from app.services.browser import SessionExpired, manager as browser_manager
 from app.services.dedup import content_hash
 from app.services.storage import storage
@@ -54,7 +55,7 @@ async def enqueue(function: str, *args, defer_seconds: int = 0) -> None:
         await pool.aclose()
 
 
-async def _fresh_access_token(db, account: XAccount) -> str:
+async def _fresh_access_token(db, account: Account) -> str:
     """Renova o token se estiver perto de expirar."""
     expires = account.token_expires_at
     if expires and expires.tzinfo is None:
@@ -109,7 +110,8 @@ async def collect_account(ctx, account_id: int, max_posts: int | None = None) ->
                 baseline=account.engagement_baseline,
             )
             post = SourcePost(
-                x_post_id=item["x_post_id"],
+                platform=account.platform,
+                platform_post_id=item["x_post_id"],
                 monitored_account_id=account.id,
                 user_id=account.user_id,
                 text=item["text"],
@@ -143,6 +145,13 @@ async def collect_account(ctx, account_id: int, max_posts: int | None = None) ->
             saved += 1
 
         account.last_collected_at = datetime.now(timezone.utc)
+        # Proxima coleta automatica com jitter — nunca um horario redondo fixo
+        # (ver sweep_collection no scheduler.py).
+        account.next_collect_at = account.last_collected_at + timedelta(
+            hours=random.uniform(
+                settings.COLLECTION_INTERVAL_MIN_HOURS, settings.COLLECTION_INTERVAL_MAX_HOURS
+            )
+        )
         await db.commit()
         log.info("Fonte @%s: %d novos posts", account.username, saved)
         return {"saved": saved}
@@ -207,22 +216,23 @@ async def _candidate_media_paths(db, candidate_id: int) -> list[str]:
     return paths
 
 
-async def _publish_via_web(db, account: XAccount, candidate: ContentCandidate) -> str:
+async def _publish_via_web(db, account: Account, candidate: ContentCandidate) -> str:
     """Publica pelo navegador, no contexto isolado da conta. Salva o storage_state."""
     if not account.session_valid:
         raise SessionExpired(f"Conta @{account.username} sem sessao valida. Faca login.")
     media_paths = await _candidate_media_paths(db, candidate.id)
+    driver = platform_web.driver_for(account.platform)
     async with browser_manager.session(account) as (page, _ctx):
-        if not await x_web.is_logged_in(page):
+        if not await driver.is_logged_in(page):
             account.session_valid = False
             await db.commit()
             raise SessionExpired(f"Conta @{account.username} deslogou. Refaca o login.")
-        post_id = await x_web.publish(page, candidate.generated_text, media_paths)
+        post_id = await driver.publish(page, candidate.generated_text, media_paths)
     await db.commit()  # persiste o storage_state renovado
     return post_id
 
 
-async def _enforce_pacing(db, row: ScheduledPost, account: XAccount, now: datetime) -> bool:
+async def _enforce_pacing(db, row: ScheduledPost, account: Account, now: datetime) -> bool:
     """Rate limit INTERNO no momento da publicacao (Fase 4).
 
     O scheduler distribui horarios respeitando a janela, mas isso nao impede dois
@@ -241,7 +251,7 @@ async def _enforce_pacing(db, row: ScheduledPost, account: XAccount, now: dateti
         await db.execute(
             select(ScheduledPost)
             .where(
-                ScheduledPost.x_account_id == account.id,
+                ScheduledPost.account_id == account.id,
                 ScheduledPost.status == "published",
             )
             .order_by(ScheduledPost.scheduled_at.desc())
@@ -268,7 +278,7 @@ async def _enforce_pacing(db, row: ScheduledPost, account: XAccount, now: dateti
             select(func.count())
             .select_from(ScheduledPost)
             .where(
-                ScheduledPost.x_account_id == account.id,
+                ScheduledPost.account_id == account.id,
                 ScheduledPost.status == "published",
                 ScheduledPost.scheduled_at >= day_start,
             )
@@ -297,7 +307,7 @@ async def collect_post_stats(ctx, account_id: int) -> dict:
       - manual, via POST /api/analytics/refresh.
     """
     async with SessionLocal() as db:
-        account = await db.get(XAccount, account_id)
+        account = await db.get(Account, account_id)
         if not account or not account.is_active or account.auth_method != "browser":
             return {"skipped": True}
         if not account.session_state_encrypted:
@@ -307,7 +317,7 @@ async def collect_post_stats(ctx, account_id: int) -> dict:
         rows = (
             await db.execute(
                 select(ScheduledPost).where(
-                    ScheduledPost.x_account_id == account.id,
+                    ScheduledPost.account_id == account.id,
                     ScheduledPost.status == "published",
                     ScheduledPost.scheduled_at >= window_start,
                     ScheduledPost.published_post_id != "",
@@ -318,14 +328,15 @@ async def collect_post_stats(ctx, account_id: int) -> dict:
         if not wanted:
             return {"skipped": True, "reason": "sem posts publicados"}
 
+        driver = platform_web.driver_for(account.platform)
         try:
             async with browser_manager.session(account) as (page, _ctx):
-                if not await x_web.is_logged_in(page):
+                if not await driver.is_logged_in(page):
                     account.session_valid = False
                     await db.commit()
                     log.warning("Coleta de stats: @%s deslogou.", account.username)
                     return {"session_expired": True}
-                posts = await x_web.fetch_timeline(
+                posts = await driver.fetch_timeline(
                     page, account.username, max_posts=40
                 )
         except SessionExpired as exc:
@@ -356,7 +367,7 @@ async def collect_post_stats(ctx, account_id: int) -> dict:
                 stat = PostStats(
                     user_id=account.user_id,
                     scheduled_post_id=row.id,
-                    x_account_id=account.id,
+                    account_id=account.id,
                 )
                 db.add(stat)
                 existing[row.id] = stat
@@ -397,7 +408,7 @@ async def publish_scheduled(ctx, scheduled_id: int) -> dict:
         ):
             return {"too_early": True}
 
-        account = await db.get(XAccount, row.x_account_id)
+        account = await db.get(Account, row.account_id)
         candidate = await db.get(ContentCandidate, row.content_candidate_id)
         if not account or not candidate or not account.is_active:
             row.status, row.last_error = "failed", "Conta ou conteudo indisponivel"
@@ -508,7 +519,7 @@ async def run_retweet(ctx, job_id: int) -> dict:
         if not job or job.status in ("done", "cancelled"):
             return {"skipped": True}
 
-        account = await db.get(XAccount, job.target_x_account_id)
+        account = await db.get(Account, job.target_x_account_id)
         if not account or not account.is_active:
             job.status, job.last_error = "failed", "Conta indisponivel"
             await db.commit()
@@ -558,7 +569,11 @@ async def run_retweet(ctx, job_id: int) -> dict:
 
 class WorkerSettings:
     functions = [
-        collect_account,
+        # Scroll pra carregar mais posts (fetch_timeline) pode levar um tempo,
+        # principalmente se a conta-leitora ja estiver ocupada com outra
+        # coleta (lock por conta em browser.py) — timeout mais folgado que o
+        # padrao evita falha por fila, nao por trabalho de verdade.
+        arq_func(collect_account, timeout=600),
         collect_all,
         collect_post_stats,
         publish_scheduled,

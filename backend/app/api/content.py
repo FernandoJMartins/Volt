@@ -14,6 +14,7 @@ from app.core.deps import current_user
 from app.db import get_db
 from app.api.media import attach_media
 from app.models import (
+    Account,
     AIGeneration,
     AuditLog,
     CandidateMedia,
@@ -23,9 +24,8 @@ from app.models import (
     ScheduledPost,
     SourcePost,
     User,
-    XAccount,
 )
-from app.services import ai, autopilot, bulk, dedup
+from app.services import ai, autopilot, bulk, dedup, links
 from app.workers import enqueue
 
 router = APIRouter(prefix="/api/content", tags=["content"])
@@ -109,8 +109,9 @@ def _serialize(c: ContentCandidate, media: list[dict] | None = None) -> dict:
         "origin": c.origin,
         "block_reason": c.block_reason,
         "source_post_id": c.source_post_id,
-        "target_x_account_id": c.target_x_account_id,
+        "target_x_account_id": c.target_account_id,
         "account_username": c.account.username if c.account else None,
+        "platform": c.account.platform if c.account else "x",
         "created_at": c.created_at,
         "approved_at": c.approved_at,
     }
@@ -144,7 +145,7 @@ async def _check_cross_posting(
             select(ContentCandidate)
             .where(
                 ContentCandidate.user_id == user_id,
-                ContentCandidate.target_x_account_id != target_account_id,
+                ContentCandidate.target_account_id != target_account_id,
                 ContentCandidate.status.in_(("approved", "scheduled", "published")),
                 ContentCandidate.created_at >= cutoff,
             )
@@ -213,7 +214,7 @@ async def generate(
             "ANTHROPIC_API_KEY), ou escreva o texto manualmente.",
         )
 
-    account = await db.get(XAccount, body.target_x_account_id)
+    account = await db.get(Account, body.target_x_account_id)
     if not account or account.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta destino nao encontrada")
 
@@ -232,6 +233,7 @@ async def generate(
     angles, usage = await ai.provider.generate_angles(
         source_text, account.persona_prompt, body.count
     )
+    angles = [links.replace_telegram_links(a, account.redirect_url) for a in angles]
     db.add(
         AIGeneration(
             user_id=user.id,
@@ -270,17 +272,18 @@ async def list_candidates(
 async def create_candidate(
     body: CandidateIn, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
 ):
-    account = await db.get(XAccount, body.target_x_account_id)
+    account = await db.get(Account, body.target_x_account_id)
     if not account or account.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta destino nao encontrada")
 
+    text = links.replace_telegram_links(body.text.strip(), account.redirect_url)
     candidate = ContentCandidate(
         user_id=user.id,
         source_post_id=body.source_post_id,
-        target_x_account_id=body.target_x_account_id,
-        generated_text=body.text.strip(),
+        target_account_id=body.target_x_account_id,
+        generated_text=text,
         origin=body.origin if body.origin in ("manual", "ai") else "manual",
-        content_hash=dedup.content_hash(body.text),
+        content_hash=dedup.content_hash(text),
     )
     db.add(candidate)
     await db.flush()
@@ -304,10 +307,10 @@ async def create_bulk(
     """
     accounts = (
         await db.execute(
-            select(XAccount).where(
-                XAccount.id.in_(body.account_ids),
-                XAccount.user_id == user.id,
-                XAccount.is_active.is_(True),
+            select(Account).where(
+                Account.id.in_(body.account_ids),
+                Account.user_id == user.id,
+                Account.is_active.is_(True),
             )
         )
     ).scalars().all()
@@ -358,10 +361,11 @@ async def create_bulk(
         text = text_row.text.strip()[:280]
         if not text:
             continue
+        text = links.replace_telegram_links(text, account.redirect_url)
 
         candidate = ContentCandidate(
             user_id=user.id,
-            target_x_account_id=account.id,
+            target_account_id=account.id,
             generated_text=text,
             origin="manual",
             content_hash=dedup.content_hash(text),
@@ -420,11 +424,11 @@ async def bulk_generate(
             "IA desativada. Ative AI_ENABLED=true no .env (Ollama local ou ANTHROPIC_API_KEY).",
         )
 
-    accounts_q = select(XAccount).where(
-        XAccount.user_id == user.id, XAccount.is_active.is_(True)
+    accounts_q = select(Account).where(
+        Account.user_id == user.id, Account.is_active.is_(True)
     )
     if body.account_ids:
-        accounts_q = accounts_q.where(XAccount.id.in_(body.account_ids))
+        accounts_q = accounts_q.where(Account.id.in_(body.account_ids))
     accounts = (await db.execute(accounts_q)).scalars().all()
     if not accounts:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Nenhuma conta destino valida")
@@ -486,14 +490,15 @@ async def bulk_generate(
             failed += 1
             continue
 
+        text = links.replace_telegram_links(angles[0][:280], account.redirect_url)
         candidate = ContentCandidate(
             user_id=user.id,
             source_post_id=post.id,
-            target_x_account_id=account.id,
-            generated_text=angles[0][:280],
+            target_account_id=account.id,
+            generated_text=text,
             origin="ai",
             status="pending",
-            content_hash=dedup.content_hash(angles[0]),
+            content_hash=dedup.content_hash(text),
         )
         db.add(candidate)
         await db.flush()
@@ -544,8 +549,10 @@ async def edit_candidate(
     c = await db.get(ContentCandidate, candidate_id)
     if not c or c.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conteudo nao encontrado")
-    c.generated_text = body.text.strip()
-    c.content_hash = dedup.content_hash(body.text)
+    redirect_url = c.account.redirect_url if c.account else ""
+    text = links.replace_telegram_links(body.text.strip(), redirect_url)
+    c.generated_text = text
+    c.content_hash = dedup.content_hash(text)
     if c.status == "blocked":
         c.status, c.block_reason = "pending", ""
     await db.commit()
@@ -561,8 +568,12 @@ async def approve(
     if not c or c.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conteudo nao encontrado")
 
-    # Regra de negocio: todo post precisa de midia propria/licenciada.
-    if settings.MEDIA_REQUIRED:
+    account = await db.get(Account, c.target_account_id) if c.target_account_id else None
+
+    # Regra de negocio: todo post precisa de midia propria/licenciada — por
+    # conta (Threads nao exige como o X). Sem conta destino, cai no default global.
+    media_required = account.media_required if account else settings.MEDIA_REQUIRED
+    if media_required:
         has_media = (
             await db.execute(
                 select(func.count())
@@ -577,7 +588,7 @@ async def approve(
                 "seu antes de aprovar (em Mídia, marque como própria ou licenciada).",
             )
 
-    conflict = await _check_cross_posting(db, user.id, c.generated_text, c.target_x_account_id)
+    conflict = await _check_cross_posting(db, user.id, c.generated_text, c.target_account_id)
     if conflict:
         c.status = "blocked"
         c.block_reason = (
@@ -596,19 +607,18 @@ async def approve(
             action="content.approved",
             entity="content_candidate",
             entity_id=str(c.id),
-            detail={"account_id": c.target_x_account_id, "origin": c.origin},
+            detail={"account_id": c.target_account_id, "origin": c.origin},
         )
     )
 
     # Piloto automatico: aprovar ja agenda no proximo horario livre da conta
     # (cadencia de 1-2h, teto diario, janela) — sem escolher data/hora a mao.
     scheduled_row = None
-    account = await db.get(XAccount, c.target_x_account_id) if c.target_x_account_id else None
     if account and account.auto_pilot:
         slot = await autopilot.next_auto_slot(db, account)
         scheduled_row = ScheduledPost(
             user_id=user.id,
-            x_account_id=account.id,
+            account_id=account.id,
             content_candidate_id=c.id,
             scheduled_at=slot,
         )

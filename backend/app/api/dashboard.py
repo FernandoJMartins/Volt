@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import current_user
 from app.db import get_db
-from app.models import ContentCandidate, ScheduledPost, SourcePost, User, XAccount
+from app.models import Account, ContentCandidate, ScheduledPost, SourcePost, User
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -20,7 +20,7 @@ async def stats(user: User = Depends(current_user), db: AsyncSession = Depends(g
         return (await db.execute(query)).scalar_one()
 
     return {
-        "connected_accounts": await count(XAccount, XAccount.is_active.is_(True)),
+        "connected_accounts": await count(Account, Account.is_active.is_(True)),
         "posts_today": await count(SourcePost, SourcePost.collected_at >= today),
         "posts_total": await count(SourcePost),
         "pending_review": await count(ContentCandidate, ContentCandidate.status == "pending"),

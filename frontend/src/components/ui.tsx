@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
-import { IconHeart, IconRepost, IconReply, IconViews } from './Icons'
-import type { SourcePost } from '../api/client'
+import { useEffect, useState, type ReactNode } from 'react'
+import { IconHeart, IconPlatformThreads, IconPlatformX, IconRepost, IconReply, IconViews } from './Icons'
+import type { Platform, SourcePost } from '../api/client'
 
 export function TopBar({ title, children }: { title: string; children?: ReactNode }) {
   return (
@@ -33,6 +33,39 @@ export function Empty({ title, hint }: { title: string; hint?: string }) {
   )
 }
 
+const PLATFORM_TAB_KEY = 'volt.platformTab'
+
+/** Aba X/Threads lembrada entre paginas (Dashboard, Meus Textos, Conteúdo, Fila). */
+export function usePlatformTab(): [Platform, (p: Platform) => void] {
+  const [tab, setTab] = useState<Platform>(
+    () => (localStorage.getItem(PLATFORM_TAB_KEY) as Platform) || 'x',
+  )
+  useEffect(() => {
+    localStorage.setItem(PLATFORM_TAB_KEY, tab)
+  }, [tab])
+  return [tab, setTab]
+}
+
+export function PlatformTabs({ value, onChange }: { value: Platform; onChange: (p: Platform) => void }) {
+  return (
+    <div className="tabs">
+      <div className={`tab${value === 'x' ? ' active' : ''}`} onClick={() => onChange('x')}>
+        <span className="row" style={{ gap: 6, justifyContent: 'center' }}>
+          <IconPlatformX size={13} /> X
+        </span>
+      </div>
+      <div
+        className={`tab${value === 'threads' ? ' active' : ''}`}
+        onClick={() => onChange('threads')}
+      >
+        <span className="row" style={{ gap: 6, justifyContent: 'center' }}>
+          <IconPlatformThreads size={13} /> Threads
+        </span>
+      </div>
+    </div>
+  )
+}
+
 export function Loading() {
   return (
     <div className="empty">
@@ -50,7 +83,7 @@ export function Modal({
   onClose,
   children,
 }: {
-  title: string
+  title: ReactNode
   onClose: () => void
   children: ReactNode
 }) {

@@ -1,22 +1,39 @@
 import { useEffect, useState } from 'react'
-import { api, type XAccount } from '../api/client'
+import { api, type Account, type Platform } from '../api/client'
 import { Avatar, Empty, ErrorBanner, Loading, Modal, Pill, TopBar } from '../components/ui'
+import { IconPlatformThreads, IconPlatformX } from '../components/Icons'
+
+const PLATFORM_LABEL: Record<Platform, string> = { x: 'X', threads: 'Threads' }
+
+function PlatformBadge({ platform }: { platform: Platform }) {
+  return (
+    <span className={`pill platform-${platform}`}>
+      {platform === 'threads' ? <IconPlatformThreads size={11} /> : <IconPlatformX size={11} />}
+      {PLATFORM_LABEL[platform]}
+    </span>
+  )
+}
 
 export default function Accounts() {
-  const [accounts, setAccounts] = useState<XAccount[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [editing, setEditing] = useState<XAccount | null>(null)
-  const [form, setForm] = useState<Partial<XAccount>>({})
-  const [importing, setImporting] = useState<{ accountId: number | null } | null>(null)
+  const [editing, setEditing] = useState<Account | null>(null)
+  const [form, setForm] = useState<Partial<Account>>({})
+  const [importing, setImporting] = useState<{ accountId: number | null; platform: Platform } | null>(
+    null,
+  )
   const [cookiesText, setCookiesText] = useState('')
   const [importBusy, setImportBusy] = useState(false)
 
   async function load() {
     setLoading(true)
     try {
-      setAccounts(await api.xAccounts())
+      const rows = await api.xAccounts()
+      // X primeiro, Threads depois — mais previsivel que a ordem de criacao.
+      const order: Record<Platform, number> = { x: 0, threads: 1 }
+      setAccounts([...rows].sort((a, b) => order[a.platform] - order[b.platform] || a.id - b.id))
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -32,8 +49,8 @@ export default function Accounts() {
   }, [])
 
   /** Importa cookies exportados do navegador LOCAL do usuario — metodo padrao
-      de conexao, porque o X bloqueia login a partir do IP do servidor. O backend
-      valida a sessao abrindo o x.com headless com os cookies recem-importados. */
+      de conexao, porque X/Threads bloqueiam login a partir do IP do servidor.
+      O backend valida a sessao abrindo o site headless com os cookies recem-importados. */
   async function submitImport() {
     if (!importing || !cookiesText.trim()) return
     setImportBusy(true)
@@ -41,7 +58,7 @@ export default function Accounts() {
     try {
       const res =
         importing.accountId == null
-          ? await api.importCookies(cookiesText)
+          ? await api.importCookies(cookiesText, importing.platform)
           : await api.importCookiesInto(importing.accountId, cookiesText)
       setImporting(null)
       setCookiesText('')
@@ -49,8 +66,8 @@ export default function Accounts() {
         setNotice(`Sessão de @${res.username || res.account.username} importada e validada.`)
       } else {
         setError(
-          'Cookies salvos, mas o X não validou a sessão (cookies expirados?). ' +
-            'Exporte de novo estando logado no X e tente outra vez.',
+          `Cookies salvos, mas ${PLATFORM_LABEL[res.account.platform]} não validou a sessão ` +
+            '(cookies expirados?). Exporte de novo estando logado e tente outra vez.',
         )
       }
       load()
@@ -79,11 +96,21 @@ export default function Accounts() {
           className="btn sm"
           title="Cole os cookies exportados do seu navegador"
           onClick={() => {
-            setImporting({ accountId: null })
+            setImporting({ accountId: null, platform: 'x' })
             setCookiesText('')
           }}
         >
-          Importar cookies
+          + Conta do X
+        </button>
+        <button
+          className="btn sm ghost"
+          title="Cole os cookies exportados do seu navegador"
+          onClick={() => {
+            setImporting({ accountId: null, platform: 'threads' })
+            setCookiesText('')
+          }}
+        >
+          + Conta do Threads
         </button>
       </TopBar>
 
@@ -91,9 +118,10 @@ export default function Accounts() {
       {notice && <div className="banner info">{notice}</div>}
 
       <div className="banner">
-        Conecte suas contas importando os <b>cookies do X</b> exportados do navegador da sua
-        máquina (extensão "Get cookies.txt LOCALLY", só o site x.com). A sessão fica salva
-        criptografada e o painel não usa a API oficial (paga). Nunca guardamos sua senha.
+        Conecte suas contas importando os <b>cookies do navegador</b> — X (extensão "Get
+        cookies.txt LOCALLY", site x.com) ou Threads (mesma extensão, site threads.com). A
+        sessão fica salva criptografada e o painel não usa API oficial paga. Nunca guardamos
+        sua senha.
       </div>
 
       {loading ? (
@@ -101,7 +129,7 @@ export default function Accounts() {
       ) : accounts.length === 0 ? (
         <Empty
           title="Nenhuma conta conectada"
-          hint="Conecte sua primeira conta do X para publicar."
+          hint="Conecte sua primeira conta do X ou do Threads para publicar."
         />
       ) : (
         accounts.map((a) => (
@@ -111,6 +139,7 @@ export default function Accounts() {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="row" style={{ gap: 6 }}>
                   <span className="bold">{a.display_name || a.username}</span>
+                  <PlatformBadge platform={a.platform} />
                   <Pill status={a.connected ? 'approved' : 'failed'}>
                     {a.connected ? 'conectada' : 'sem token'}
                   </Pill>
@@ -149,7 +178,14 @@ export default function Accounts() {
       )}
 
       {editing && (
-        <Modal title={`@${editing.username}`} onClose={() => setEditing(null)}>
+        <Modal
+          title={
+            <span className="row" style={{ gap: 8 }}>
+              @{editing.username} <PlatformBadge platform={editing.platform} />
+            </span>
+          }
+          onClose={() => setEditing(null)}
+        >
           <div className="field">
             <label className="label">Personalidade / instruções próprias desta conta</label>
             <textarea
@@ -192,8 +228,9 @@ export default function Accounts() {
           {(form.posts_per_day ?? 8) > 20 && (
             <div className="banner warning" style={{ margin: '10px 0 0' }}>
               {form.posts_per_day}/dia é volume alto. Sem proxy dedicado pra essa conta, isso
-              aumenta o risco de ela ser sinalizada/suspensa pelo X — considere configurar um
-              proxy (mais abaixo) ou baixar o valor se a conta for nova.
+              aumenta o risco de ela ser sinalizada/suspensa pelo {PLATFORM_LABEL[editing.platform]}{' '}
+              — considere configurar um proxy (mais abaixo) ou baixar o valor se a conta for
+              nova.
             </div>
           )}
 
@@ -234,9 +271,40 @@ export default function Accounts() {
               }
             />
             <div className="small muted" style={{ marginTop: 6 }}>
-              Sem proxy, todas as contas saem pelo mesmo IP do servidor — o X pode
-              correlacionar contas por isso. Preencha para essa conta navegar pelo seu
-              próprio IP. Deixe vazio e salve para remover um proxy já configurado.
+              Sem proxy, todas as contas saem pelo mesmo IP do servidor — o{' '}
+              {PLATFORM_LABEL[editing.platform]} pode correlacionar contas por isso. Preencha
+              para essa conta navegar pelo seu próprio IP. Deixe vazio e salve para remover um
+              proxy já configurado.
+            </div>
+          </div>
+
+          <label className="checkline" style={{ marginTop: 16 }}>
+            <input
+              type="checkbox"
+              checked={form.media_required ?? true}
+              onChange={(e) => setForm({ ...form, media_required: e.target.checked })}
+            />
+            <span>Exige mídia própria/licenciada em todo post</span>
+          </label>
+          <div className="small muted" style={{ marginTop: 4 }}>
+            {editing.platform === 'threads'
+              ? 'No Threads é comum postar só texto — desative se essa conta não precisar de mídia sempre.'
+              : 'Regra padrão do painel. Desative só se quiser permitir posts só de texto nesta conta.'}
+          </div>
+
+          <div className="field" style={{ marginTop: 16 }}>
+            <label className="label">Link de redirecionamento desta conta</label>
+            <input
+              className="input"
+              type="text"
+              value={form.redirect_url ?? ''}
+              onChange={(e) => setForm({ ...form, redirect_url: e.target.value })}
+              placeholder="https://www.spectrumred.com/r/seu-link"
+            />
+            <div className="small muted" style={{ marginTop: 6 }}>
+              Preenchido, qualquer link do Telegram (t.me, telegram.me, telegram.dog) que
+              aparecer num post copiado de uma fonte é trocado automaticamente por este link —
+              o tráfego vai pro seu link, não pro Telegram de outra pessoa.
             </div>
           </div>
 
@@ -262,19 +330,19 @@ export default function Accounts() {
                   <input
                     type="radio"
                     name="content_mode"
-                    checked={(form.content_mode ?? 'ai') === 'ai'}
-                    onChange={() => setForm({ ...form, content_mode: 'ai' })}
+                    checked={(form.content_mode ?? 'fast') === 'fast'}
+                    onChange={() => setForm({ ...form, content_mode: 'fast' })}
                   />
-                  <span>Texto por IA (mais lento, melhor qualidade)</span>
+                  <span>Reescrita rápida (recomendado): sinônimos + inverte o CASE do post (maiúscula ↔ minúscula), instantâneo</span>
                 </label>
                 <label className="checkline">
                   <input
                     type="radio"
                     name="content_mode"
-                    checked={form.content_mode === 'fast'}
-                    onChange={() => setForm({ ...form, content_mode: 'fast' })}
+                    checked={form.content_mode === 'ai'}
+                    onChange={() => setForm({ ...form, content_mode: 'ai' })}
                   />
-                  <span>Reescrita rápida (sem IA, instantânea, mais mecânica)</span>
+                  <span>Texto por IA (mais lento, melhor qualidade)</span>
                 </label>
               </div>
             )}
@@ -303,7 +371,7 @@ export default function Accounts() {
               className="btn ghost sm"
               onClick={() => {
                 setEditing(null)
-                setImporting({ accountId: editing.id })
+                setImporting({ accountId: editing.id, platform: editing.platform })
                 setCookiesText('')
               }}
             >
@@ -328,32 +396,57 @@ export default function Accounts() {
 
       {importing && (
         <Modal
-          title={importing.accountId == null ? 'Importar cookies' : 'Importar cookies nesta conta'}
+          title={
+            importing.accountId == null
+              ? `Importar cookies — ${PLATFORM_LABEL[importing.platform]}`
+              : 'Importar cookies nesta conta'
+          }
           onClose={() => {
             setImporting(null)
             setCookiesText('')
           }}
         >
+          {importing.accountId == null && (
+            <div className="row" style={{ gap: 8, marginBottom: 12 }}>
+              <button
+                className={`btn sm ${importing.platform === 'x' ? '' : 'ghost'}`}
+                onClick={() => setImporting({ ...importing, platform: 'x' })}
+              >
+                <IconPlatformX size={12} /> X
+              </button>
+              <button
+                className={`btn sm ${importing.platform === 'threads' ? '' : 'ghost'}`}
+                onClick={() => setImporting({ ...importing, platform: 'threads' })}
+              >
+                <IconPlatformThreads size={12} /> Threads
+              </button>
+            </div>
+          )}
           <div className="banner info">
-            Exporte os cookies do X no navegador <b>da sua máquina</b> — estando logado na
-            conta — com a extensão &quot;Get cookies.txt LOCALLY&quot; (ou equivalente) e cole
-            aqui. Na extensão, escolha exportar <b>só o site x.com</b> (não &quot;all
-            cookies&quot;). Aceita cookies.txt (Netscape), lista JSON ou storage_state do
-            Playwright. Funciona mesmo quando o X bloqueia o login pelo IP do servidor.
+            Exporte os cookies do {PLATFORM_LABEL[importing.platform]} no navegador{' '}
+            <b>da sua máquina</b> — estando logado na conta — com a extensão &quot;Get
+            cookies.txt LOCALLY&quot; (ou equivalente) e cole aqui. Na extensão, escolha
+            exportar <b>só o site {importing.platform === 'threads' ? 'threads.com' : 'x.com'}</b>{' '}
+            (não &quot;all cookies&quot;). Aceita cookies.txt (Netscape), lista JSON ou
+            storage_state do Playwright. Funciona mesmo quando {PLATFORM_LABEL[importing.platform]}{' '}
+            bloqueia o login pelo IP do servidor.
           </div>
           <textarea
             className="textarea"
             style={{ marginTop: 12, minHeight: 180, fontFamily: 'monospace', fontSize: 12 }}
             placeholder={
-              '# Netscape HTTP Cookie File\n.x.com\tTRUE\t/\tTRUE\t1777777777\tauth_token\t...'
+              importing.platform === 'threads'
+                ? '# Netscape HTTP Cookie File\n.threads.com\tTRUE\t/\tTRUE\t1803911624\tsessionid\t...'
+                : '# Netscape HTTP Cookie File\n.x.com\tTRUE\t/\tTRUE\t1777777777\tauth_token\t...'
             }
             value={cookiesText}
             onChange={(e) => setCookiesText(e.target.value)}
           />
           <p className="small muted" style={{ marginTop: 8, marginBottom: 0 }}>
-            Não importa se o arquivo tem milhares de linhas: só os cookies de
-            x.com/twitter.com são aproveitados; o resto é descartado. Ficam criptografados
-            no servidor e nunca mais aparecem nesta tela.
+            Não importa se o arquivo tem milhares de linhas: só os cookies de{' '}
+            {importing.platform === 'threads' ? 'threads.com/threads.net' : 'x.com/twitter.com'}{' '}
+            são aproveitados; o resto é descartado. Ficam criptografados no servidor e nunca
+            mais aparecem nesta tela.
           </p>
           <div className="row" style={{ marginTop: 10, gap: 8 }}>
             <label className="btn ghost sm" style={{ cursor: 'pointer' }}>

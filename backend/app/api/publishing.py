@@ -13,8 +13,9 @@ from app.config import settings
 from app.core.deps import current_user
 from app.db import get_db
 from app.api.content import load_media_map
-from app.models import AuditLog, ContentCandidate, PostStats, RetweetJob, ScheduledPost, User, XAccount
+from app.models import Account, AuditLog, ContentCandidate, PostStats, RetweetJob, ScheduledPost, User
 from app.services import analytics as an
+from app.services import platform_web
 from app.services.scheduling import distribute_slots, fit_window
 from app.workers import enqueue
 
@@ -85,8 +86,16 @@ async def list_queue(
             "attempts": r.attempts,
             "last_error": r.last_error,
             "published_post_id": r.published_post_id,
-            "x_account_id": r.x_account_id,
+            "x_account_id": r.account_id,
             "account_username": r.account.username if r.account else None,
+            "platform": r.account.platform if r.account else "x",
+            "post_url": (
+                platform_web.driver_for(r.account.platform).post_url(
+                    r.account.username, r.published_post_id
+                )
+                if r.account and r.published_post_id
+                else None
+            ),
             "text": r.candidate.generated_text if r.candidate else "",
         }
         for r in rows
@@ -104,13 +113,13 @@ async def schedule(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "Só conteudo aprovado pode ser agendado (revisao humana)."
         )
-    if not c.target_x_account_id:
+    if not c.target_account_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Conteudo sem conta destino")
 
     when = body.scheduled_at or datetime.now(timezone.utc)
     row = ScheduledPost(
         user_id=user.id,
-        x_account_id=c.target_x_account_id,
+        account_id=c.target_account_id,
         content_candidate_id=c.id,
         scheduled_at=when,
     )
@@ -133,7 +142,7 @@ async def auto_schedule(
     Cada post cai em `anterior + random(min, max)`. O sorteio serve so para o feed
     nao ficar mecanico — nao é para esconder automacao do X.
     """
-    account = await db.get(XAccount, body.x_account_id)
+    account = await db.get(Account, body.x_account_id)
     if not account or account.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta nao encontrada")
 
@@ -143,7 +152,7 @@ async def auto_schedule(
         select(ContentCandidate)
         .where(
             ContentCandidate.user_id == user.id,
-            ContentCandidate.target_x_account_id == account.id,
+            ContentCandidate.target_account_id == account.id,
             ContentCandidate.status == "approved",
         )
         .order_by(ContentCandidate.created_at.asc())
@@ -160,7 +169,7 @@ async def auto_schedule(
     last = (
         await db.execute(
             select(func.max(ScheduledPost.scheduled_at)).where(
-                ScheduledPost.x_account_id == account.id,
+                ScheduledPost.account_id == account.id,
                 ScheduledPost.status.in_(("queued", "publishing")),
             )
         )
@@ -190,7 +199,7 @@ async def auto_schedule(
             db.add(
                 ScheduledPost(
                     user_id=user.id,
-                    x_account_id=account.id,
+                    account_id=account.id,
                     content_candidate_id=candidate.id,
                     scheduled_at=slot,
                 )
@@ -210,7 +219,7 @@ async def auto_schedule(
             db.add(
                 ScheduledPost(
                     user_id=user.id,
-                    x_account_id=account.id,
+                    account_id=account.id,
                     content_candidate_id=candidate.id,
                     scheduled_at=slot,
                 )
@@ -244,7 +253,7 @@ async def auto_schedule(
 
 
 async def _optimized_horizon_slots(
-    db: AsyncSession, account: XAccount, cursor: datetime, deadline: datetime
+    db: AsyncSession, account: Account, cursor: datetime, deadline: datetime
 ) -> list[datetime]:
     """Slots do horizonte guiados pelo engajamento historico, no fuso da conta.
 
@@ -262,7 +271,7 @@ async def _optimized_horizon_slots(
         await db.execute(
             select(PostStats, ScheduledPost)
             .join(ScheduledPost, ScheduledPost.id == PostStats.scheduled_post_id)
-            .where(PostStats.x_account_id == account.id, ScheduledPost.scheduled_at >= since)
+            .where(PostStats.account_id == account.id, ScheduledPost.scheduled_at >= since)
         )
     ).all()
     norm = []
@@ -317,10 +326,10 @@ async def reschedule(
     if body.scheduled_at:
         row.scheduled_at = body.scheduled_at
     if body.x_account_id:
-        acc = await db.get(XAccount, body.x_account_id)
+        acc = await db.get(Account, body.x_account_id)
         if not acc or acc.user_id != user.id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta nao encontrada")
-        row.x_account_id = body.x_account_id
+        row.account_id = body.x_account_id
     row.status = "queued"
     await db.commit()
     return {"id": row.id, "scheduled_at": row.scheduled_at, "status": row.status}
@@ -390,10 +399,10 @@ async def create_retweets(
 
     accounts = (
         await db.execute(
-            select(XAccount).where(
-                XAccount.user_id == user.id,
-                XAccount.id.in_(body.target_account_ids),
-                XAccount.is_active.is_(True),
+            select(Account).where(
+                Account.user_id == user.id,
+                Account.id.in_(body.target_account_ids),
+                Account.is_active.is_(True),
             )
         )
     ).scalars().all()

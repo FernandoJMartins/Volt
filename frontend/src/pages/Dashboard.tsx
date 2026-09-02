@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, type MonitoredAccount, type SourcePost, type XAccount } from '../api/client'
+import { api, type Account, type MonitoredAccount, type SourcePost } from '../api/client'
 import { IconPlus, IconRefresh, IconSparkle, IconTrash } from '../components/Icons'
 import {
   Avatar,
@@ -10,14 +10,17 @@ import {
   MediaStrip,
   Metrics,
   Pill,
+  PlatformTabs,
   TopBar,
   formatDate,
+  usePlatformTab,
 } from '../components/ui'
 
 export default function Dashboard() {
   const navigate = useNavigate()
   const [posts, setPosts] = useState<SourcePost[]>([])
   const [sources, setSources] = useState<MonitoredAccount[]>([])
+  const [platform, setPlatform] = usePlatformTab()
   const [filterSource, setFilterSource] = useState<number | null>(null)
   const [newUser, setNewUser] = useState('')
   const [newQty, setNewQty] = useState(15)
@@ -27,7 +30,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
 
   const [ai, setAi] = useState<{ available: boolean; model: string | null } | null>(null)
-  const [accounts, setAccounts] = useState<XAccount[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
   const [genCount, setGenCount] = useState(10)
   const [genAccounts, setGenAccounts] = useState<number[]>([]) // vazio = todas as ativas
   const [genBusy, setGenBusy] = useState(false)
@@ -66,6 +69,7 @@ export default function Dashboard() {
         username: newUser.trim(),
         source_type: 'web',
         posts_per_collect: newQty,
+        platform,
       })
       setNewUser('')
       await loadAll()
@@ -108,9 +112,11 @@ export default function Dashboard() {
     setError('')
     setNotice('')
     try {
+      // vazio = todas as contas ativas DESSA plataforma (nunca mistura X com Threads).
+      const targetIds = genAccounts.length ? genAccounts : platformAccounts.map((a) => a.id)
       const res = await api.bulkGenerate({
         count: genCount,
-        account_ids: genAccounts,
+        account_ids: targetIds,
         attach_media: true,
       })
       const parts = Object.entries(res.per_account)
@@ -133,12 +139,19 @@ export default function Dashboard() {
     await loadAll()
   }
 
+  const platformSources = sources.filter((s) => s.platform === platform)
+  const platformPosts = posts.filter((p) => p.platform === platform)
   const visible =
-    filterSource == null ? posts : posts.filter((p) => p.monitored_account_id === filterSource)
+    filterSource == null
+      ? platformPosts
+      : platformPosts.filter((p) => p.monitored_account_id === filterSource)
+  const platformAccounts = accounts.filter((a) => a.connected && a.platform === platform)
 
   return (
     <>
       <TopBar title="Início" />
+
+      <PlatformTabs value={platform} onChange={setPlatform} />
 
       {error && <ErrorBanner message={error} />}
       {notice && <div className="banner info">{notice}</div>}
@@ -175,13 +188,14 @@ export default function Dashboard() {
           </button>
         </div>
 
-        {sources.length === 0 ? (
+        {platformSources.length === 0 ? (
           <div className="small muted" style={{ marginTop: 12 }}>
-            Nenhuma conta ainda — adicione um @perfil acima.
+            Nenhuma conta do {platform === 'threads' ? 'Threads' : 'X'} ainda — adicione um
+            @perfil acima.
           </div>
         ) : (
           <div style={{ marginTop: 12 }}>
-            {sources.map((s) => (
+            {platformSources.map((s) => (
               <div key={s.id} className="source-row">
                 <div className="source-row-info">
                   <span className="bold">@{s.username}</span>
@@ -229,7 +243,7 @@ export default function Dashboard() {
         <div className="section-title">2 · Escolha um post para refazer</div>
         <div className="small muted">Clique num post para criar a sua versão (texto próprio).</div>
 
-        {sources.length > 0 && (
+        {platformSources.length > 0 && (
           <div className="row wrap" style={{ gap: 8, marginTop: 12 }}>
             <button
               className={`btn ghost sm${filterSource === null ? ' active' : ''}`}
@@ -237,7 +251,7 @@ export default function Dashboard() {
             >
               Todas
             </button>
-            {sources.map((s) => (
+            {platformSources.map((s) => (
               <button
                 key={s.id}
                 className={`btn ghost sm${filterSource === s.id ? ' active' : ''}`}
@@ -258,7 +272,7 @@ export default function Dashboard() {
             <Empty
               title="Nenhum post ainda"
               hint={
-                sources.length === 0
+                platformSources.length === 0
                   ? 'Adicione uma conta na seção 1 e clique em Coletar.'
                   : 'Clique em Coletar na seção 1 — os posts aparecem aqui com a mídia do perfil.'
               }
@@ -323,37 +337,35 @@ export default function Dashboard() {
                   setGenCount(Math.max(1, Math.min(Number(e.target.value), 100)))
                 }
               />
-              {accounts.length > 0 && (
+              {platformAccounts.length > 0 && (
                 <span className="small muted" style={{ marginLeft: 8 }}>
                   Contas (vazio = todas):
                 </span>
               )}
-              {accounts
-                .filter((a) => a.connected)
-                .map((a) => {
-                  const on = genAccounts.includes(a.id)
-                  return (
-                    <button
-                      key={a.id}
-                      className={`btn ghost sm${on ? ' active' : ''}`}
-                      onClick={() =>
-                        setGenAccounts((prev) =>
-                          on ? prev.filter((id) => id !== a.id) : [...prev, a.id],
-                        )
-                      }
-                    >
-                      @{a.username}
-                    </button>
-                  )
-                })}
+              {platformAccounts.map((a) => {
+                const on = genAccounts.includes(a.id)
+                return (
+                  <button
+                    key={a.id}
+                    className={`btn ghost sm${on ? ' active' : ''}`}
+                    onClick={() =>
+                      setGenAccounts((prev) =>
+                        on ? prev.filter((id) => id !== a.id) : [...prev, a.id],
+                      )
+                    }
+                  >
+                    @{a.username}
+                  </button>
+                )
+              })}
               <button
                 className="btn sm"
                 onClick={generateBulk}
-                disabled={genBusy || posts.length === 0 || accounts.length === 0}
+                disabled={genBusy || platformPosts.length === 0 || platformAccounts.length === 0}
                 title={
-                  posts.length === 0
+                  platformPosts.length === 0
                     ? 'Colete posts primeiro (seção 1)'
-                    : accounts.length === 0
+                    : platformAccounts.length === 0
                       ? 'Conecte uma conta em Contas'
                       : undefined
                 }
@@ -362,7 +374,7 @@ export default function Dashboard() {
                 {genBusy ? ' Gerando…' : ' Gerar rascunhos'}
               </button>
             </div>
-            {posts.length === 0 && (
+            {platformPosts.length === 0 && (
               <div className="small muted" style={{ marginTop: 8 }}>
                 Colete posts na seção 1 para a IA ter de onde reescrever.
               </div>

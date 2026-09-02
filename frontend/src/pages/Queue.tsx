@@ -1,9 +1,20 @@
 import { useEffect, useState } from 'react'
 import { api, type QueueItem } from '../api/client'
-import { Empty, ErrorBanner, Loading, MediaStrip, Pill, TopBar, formatDate } from '../components/ui'
+import {
+  Empty,
+  ErrorBanner,
+  Loading,
+  MediaStrip,
+  Pill,
+  PlatformTabs,
+  TopBar,
+  formatDate,
+  usePlatformTab,
+} from '../components/ui'
 
 export default function Queue() {
   const [items, setItems] = useState<QueueItem[]>([])
+  const [platform, setPlatform] = usePlatformTab()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -31,18 +42,22 @@ export default function Queue() {
     }
   }
 
+  const visible = items.filter((item) => item.platform === platform)
+
   return (
     <>
       <TopBar title="Fila" />
+
+      <PlatformTabs value={platform} onChange={setPlatform} />
 
       {error && <ErrorBanner message={error} />}
 
       {loading ? (
         <Loading />
-      ) : items.length === 0 ? (
+      ) : visible.length === 0 ? (
         <Empty title="Fila vazia" hint="Aprove um conteúdo e agende para vê-lo aqui." />
       ) : (
-        items.map((item) => (
+        visible.map((item) => (
           <div className="card" key={item.id}>
             <div className="row" style={{ marginBottom: 8 }}>
               <span className="bold">{formatDate(item.scheduled_at)}</span>
@@ -76,14 +91,9 @@ export default function Queue() {
                 </>
               )}
 
-              {item.status === 'published' && item.published_post_id && (
-                <a
-                  className="btn ghost sm"
-                  href={`https://x.com/${item.account_username}/status/${item.published_post_id}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Ver no X
+              {item.status === 'published' && item.post_url && (
+                <a className="btn ghost sm" href={item.post_url} target="_blank" rel="noreferrer">
+                  Ver no {item.platform === 'threads' ? 'Threads' : 'X'}
                 </a>
               )}
             </div>

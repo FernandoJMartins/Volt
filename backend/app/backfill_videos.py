@@ -14,7 +14,7 @@ import sys
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import MediaAsset, SourcePost, XAccount
+from app.models import Account, MediaAsset, SourcePost
 from app.services import media_source, x_web
 from app.services.browser import manager as browser_manager
 from app.services.storage import storage
@@ -43,8 +43,10 @@ async def main() -> None:
     async with SessionLocal() as db:
         reader = (
             await db.execute(
-                select(XAccount).where(
-                    XAccount.is_active.is_(True), XAccount.session_valid.is_(True)
+                select(Account).where(
+                    Account.platform == "x",
+                    Account.is_active.is_(True),
+                    Account.session_valid.is_(True),
                 )
             )
         ).scalars().first()
@@ -71,7 +73,7 @@ async def main() -> None:
             for i, post in enumerate(targets, 1):
                 try:
                     entities = await x_web.fetch_media_entities(
-                        page, post.x_post_id, post.author_username
+                        page, post.platform_post_id, post.author_username
                     )
                     videos = [
                         e for e in entities if e["mime"] == "application/vnd.apple.mpegurl"
@@ -80,7 +82,7 @@ async def main() -> None:
                         skipped += 1
                         log.info(
                             "[%d/%d] post %s sem video capturado (deletado/restrito?) — pulado",
-                            i, len(targets), post.x_post_id,
+                            i, len(targets), post.platform_post_id,
                         )
                         await asyncio.sleep(SLEEP_BETWEEN)
                         continue
@@ -106,12 +108,12 @@ async def main() -> None:
                     await db.commit()
                     done += 1
                     log.info(
-                        "[%d/%d] post %s -> assets %s", i, len(targets), post.x_post_id, new_ids
+                        "[%d/%d] post %s -> assets %s", i, len(targets), post.platform_post_id, new_ids
                     )
                 except Exception as exc:  # noqa: BLE001 — um post nao derruba o resto
                     await db.rollback()
                     failed += 1
-                    log.error("[%d/%d] post %s falhou: %s", i, len(targets), post.x_post_id, exc)
+                    log.error("[%d/%d] post %s falhou: %s", i, len(targets), post.platform_post_id, exc)
 
                 await asyncio.sleep(SLEEP_BETWEEN)
 

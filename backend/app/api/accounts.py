@@ -12,7 +12,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -22,13 +22,15 @@ from app.config import settings
 from app.core.deps import current_user
 from app.core.security import decrypt, encrypt
 from app.db import get_db
-from app.models import AuditLog, User, XAccount
-from app.services import x_api, x_web
+from app.models import AuditLog, User, Account
+from app.services import platform_web, x_api
 from app.services.browser import manager as browser_manager, parse_proxy, wrap_state
 from app.services.cookies import CookieImportError, has_auth_token, parse_cookie_dump
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/x/accounts", tags=["x-accounts"])
+
+_PLATFORMS = ("x", "threads")
 
 # state -> (user_id, code_verifier). Em producao multi-instancia, mover para Redis.
 _PENDING: dict[str, tuple[int, str]] = {}
@@ -51,9 +53,13 @@ class AccountSettings(BaseModel):
     # Piloto automatico: gera rascunhos sozinho e agenda no aprovar (ver autopilot.py).
     auto_pilot: bool | None = None
     content_mode: str | None = None
+    # Regra "todo post precisa de midia": por conta (Threads nao exige como o X).
+    media_required: bool | None = None
+    # Link proprio da conta — troca automatica de links do Telegram (ver app/services/links.py).
+    redirect_url: str | None = None
 
 
-def _proxy_host(acc: XAccount) -> str:
+def _proxy_host(acc: Account) -> str:
     """So o host:porta, pra UI confirmar sem reexibir credenciais."""
     if not acc.proxy_url_encrypted:
         return ""
@@ -64,10 +70,11 @@ def _proxy_host(acc: XAccount) -> str:
     return proxy["server"].split("://", 1)[-1] if proxy else ""
 
 
-def _serialize(acc: XAccount) -> dict:
+def _serialize(acc: Account) -> dict:
     """Nunca expoe tokens nem credenciais de proxy."""
     return {
         "id": acc.id,
+        "platform": acc.platform,
         "x_user_id": acc.x_user_id,
         "username": acc.username,
         "display_name": acc.display_name,
@@ -86,6 +93,8 @@ def _serialize(acc: XAccount) -> dict:
         "proxy_host": _proxy_host(acc),
         "auto_pilot": acc.auto_pilot,
         "content_mode": acc.content_mode,
+        "media_required": acc.media_required,
+        "redirect_url": acc.redirect_url,
         "session_valid": acc.session_valid,
         "session_updated_at": acc.session_updated_at.isoformat() if acc.session_updated_at else None,
         "connected": bool(acc.access_token_encrypted) or acc.session_valid,
@@ -93,12 +102,15 @@ def _serialize(acc: XAccount) -> dict:
 
 
 @router.get("")
-async def list_accounts(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    rows = (
-        await db.execute(
-            select(XAccount).where(XAccount.user_id == user.id).order_by(XAccount.id)
-        )
-    ).scalars().all()
+async def list_accounts(
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    platform: str | None = Query(None),
+):
+    query = select(Account).where(Account.user_id == user.id)
+    if platform is not None:
+        query = query.where(Account.platform == platform)
+    rows = (await db.execute(query.order_by(Account.id))).scalars().all()
     return [_serialize(a) for a in rows]
 
 
@@ -109,12 +121,16 @@ class CookieImportBody(BaseModel):
     """Despejo de cookies colado pelo usuario. Nunca e' logado nem devolvido."""
 
     cookies_text: str = Field(max_length=2_000_000)
+    # So' usado ao CRIAR conta nova (browser_import_cookies); numa conta
+    # existente a plataforma ja' esta fixada e este campo e' ignorado.
+    platform: str = "x"
 
 
 async def _import_cookies_into(
-    account: XAccount, cookies_text: str, db: AsyncSession
+    account: Account, cookies_text: str, db: AsyncSession
 ) -> dict:
-    """Parseia, salva criptografado e valida a sessao no X (headless, rapido).
+    """Parseia, salva criptografado e valida a sessao na plataforma da conta
+    (headless, rapido).
 
     SUBSTITUI a sessao anterior da conta — importar cookies e' um re-login, nao um
     merge. Se os cookies estiverem mortos, a conta fica com session_valid=False
@@ -122,10 +138,11 @@ async def _import_cookies_into(
 
     Levanta CookieImportError (vira 400) antes de qualquer efeito colateral.
     """
-    state = parse_cookie_dump(cookies_text)
-    if not has_auth_token(state):
+    driver = platform_web.driver_for(account.platform)
+    state = parse_cookie_dump(cookies_text, platform=account.platform)
+    if not has_auth_token(state, platform=account.platform):
         log.warning(
-            "Conta %s: importacao sem cookie auth_token (sessao provavelmente nao vale)",
+            "Conta %s: importacao sem cookie de sessao (provavelmente nao vale)",
             account.id,
         )
 
@@ -133,26 +150,24 @@ async def _import_cookies_into(
     account.session_updated_at = datetime.now(timezone.utc)
 
     # Valida de verdade: abre o contexto SEMEADO com os cookies importados e
-    # confere identidade no proprio x.com. Tudo com timeout fechado — importacao
-    # nunca pode pendurar a request indefinidamente.
+    # confere identidade na propria plataforma. Tudo com timeout fechado —
+    # importacao nunca pode pendurar a request indefinidamente.
     valid = False
     identity: dict = {}
     try:
         async with browser_manager.session(account) as (page, _ctx):
             try:
-                await page.goto(
-                    f"{x_web.BASE}/home", wait_until="domcontentloaded", timeout=20_000
-                )
+                await page.goto(driver.BASE, wait_until="domcontentloaded", timeout=20_000)
             except Exception:  # noqa: BLE001
                 pass  # mesmo sem carregar a home, o cookie pode existir e valer
-            valid = await x_web.is_logged_in(page)
+            valid = await driver.is_logged_in(page)
             if "/login" in page.url:
-                # X redireciona deslogados de /home para /login: cookie presente
-                # mas morto. Nao marque a sessao como valida nesse caso.
+                # Deslogado redireciona pra /login: cookie presente mas morto.
+                # Nao marque a sessao como valida nesse caso.
                 valid = False
             if valid:
                 try:
-                    identity = await asyncio.wait_for(x_web.resolve_identity(page), timeout=30)
+                    identity = await asyncio.wait_for(driver.resolve_identity(page), timeout=30)
                 except Exception:  # noqa: BLE001
                     identity = {}
     except Exception:  # noqa: BLE001
@@ -166,10 +181,10 @@ async def _import_cookies_into(
         # Unicidade parcial (user_id, x_user_id): se o id resolvido ja pertence a
         # outra conta do mesmo usuario, mantem o placeholder em vez de explodir.
         dup = await db.execute(
-            select(XAccount.id).where(
-                XAccount.user_id == account.user_id,
-                XAccount.x_user_id == identity["x_user_id"],
-                XAccount.id != account.id,
+            select(Account.id).where(
+                Account.user_id == account.user_id,
+                Account.x_user_id == identity["x_user_id"],
+                Account.id != account.id,
             )
         )
         if dup.first() is None:
@@ -206,21 +221,27 @@ async def browser_import_cookies(
     cookies estando logado no X na SUA maquina (extensao "Get cookies.txt
     LOCALLY" ou equivalente) e cole aqui. Sem noVNC, sem login manual.
 
-    Reutiliza a conta browser pendente do usuario, se houver; senao cria uma.
+    Reutiliza a conta browser pendente do usuario NESSA PLATAFORMA, se houver;
+    senao cria uma.
     """
+    if body.platform not in _PLATFORMS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"platform deve ser um de {_PLATFORMS}")
+
     account = (
         await db.execute(
-            select(XAccount).where(
-                XAccount.user_id == user.id,
-                XAccount.auth_method == "browser",
-                XAccount.x_user_id == "",
+            select(Account).where(
+                Account.user_id == user.id,
+                Account.platform == body.platform,
+                Account.auth_method == "browser",
+                Account.x_user_id == "",
             )
         )
     ).scalars().first()
 
     if account is None:
-        account = XAccount(
+        account = Account(
             user_id=user.id,
+            platform=body.platform,
             x_user_id="",
             username="(login pendente)",
             auth_method="browser",
@@ -248,7 +269,7 @@ async def browser_import_cookies_into(
     Substitui a sessao da conta pela sessao dos cookies importados; a conta passa
     a usar o metodo "browser" (os tokens OAuth, se houver, ficam intactos).
     """
-    acc = await db.get(XAccount, account_id)
+    acc = await db.get(Account, account_id)
     if not acc or acc.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta nao encontrada")
 
@@ -294,11 +315,11 @@ async def callback(request: Request, db: AsyncSession = Depends(get_db)):
     x_user_id = profile.get("id", "")
     existing = (
         await db.execute(
-            select(XAccount).where(XAccount.user_id == user_id, XAccount.x_user_id == x_user_id)
+            select(Account).where(Account.user_id == user_id, Account.x_user_id == x_user_id)
         )
     ).scalars().first()
 
-    account = existing or XAccount(user_id=user_id, x_user_id=x_user_id)
+    account = existing or Account(user_id=user_id, x_user_id=x_user_id)
     account.username = profile.get("username", "")
     account.display_name = profile.get("name", "")
     account.avatar_url = profile.get("profile_image_url", "")
@@ -328,7 +349,7 @@ async def update_account(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    acc = await db.get(XAccount, account_id)
+    acc = await db.get(Account, account_id)
     if not acc or acc.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta nao encontrada")
 
@@ -364,7 +385,7 @@ async def update_account(
 async def disconnect(
     account_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
 ):
-    acc = await db.get(XAccount, account_id)
+    acc = await db.get(Account, account_id)
     if not acc or acc.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta nao encontrada")
     db.add(

@@ -1,10 +1,20 @@
 import { useEffect, useState } from 'react'
 import { api, type MonitoredAccount } from '../api/client'
 import { IconPlus, IconRefresh, IconTrash } from '../components/Icons'
-import { Empty, ErrorBanner, Loading, Modal, TopBar, formatDate } from '../components/ui'
+import {
+  Empty,
+  ErrorBanner,
+  Loading,
+  Modal,
+  PlatformTabs,
+  TopBar,
+  formatDate,
+  usePlatformTab,
+} from '../components/ui'
 
 export default function Monitoring() {
   const [sources, setSources] = useState<MonitoredAccount[]>([])
+  const [platform, setPlatform] = usePlatformTab()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [open, setOpen] = useState(false)
@@ -32,6 +42,7 @@ export default function Monitoring() {
         username: username.replace('@', ''),
         source_type: 'web',
         posts_per_collect: qty,
+        platform,
       })
       setUsername('')
       setOpen(false)
@@ -41,6 +52,8 @@ export default function Monitoring() {
     }
   }
 
+  const visible = sources.filter((s) => s.platform === platform)
+
   return (
     <>
       <TopBar title="Monitoramento">
@@ -49,29 +62,39 @@ export default function Monitoring() {
         </button>
       </TopBar>
 
+      <PlatformTabs value={platform} onChange={setPlatform} />
+
       <div className="banner">
-        Coleta posts reais (texto e mídia) de contas do X <strong>via navegador, sem custo</strong>.
-        A mídia do perfil entra como referência visual — republicar mídia de terceiros não é
-        permitido pelo painel.
+        Coleta posts reais (texto e mídia) de contas do {platform === 'threads' ? 'Threads' : 'X'}{' '}
+        <strong>via navegador, sem custo</strong>. A mídia do perfil entra como referência visual
+        — republicar mídia de terceiros não é permitido pelo painel.
+        <br />
+        <br />
+        A coleta roda <strong>sozinha, ~1x por dia</strong> por fonte — o horário varia sempre
+        (nunca cai certinho às 00h/08h etc.) pra não parecer robô. "Coletar" continua disponível
+        pra forçar agora.
       </div>
 
       {error && <ErrorBanner message={error} />}
 
       {loading ? (
         <Loading />
-      ) : sources.length === 0 ? (
+      ) : visible.length === 0 ? (
         <Empty
           title="Nenhuma fonte monitorada"
-          hint="Adicione uma conta do X para acompanhar o que ela publica."
+          hint={`Adicione uma conta do ${platform === 'threads' ? 'Threads' : 'X'} para acompanhar o que ela publica.`}
         />
       ) : (
-        sources.map((s) => (
+        visible.map((s) => (
           <div className="card" key={s.id}>
             <div className="row">
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="bold">@{s.username}</div>
                 <div className="small muted">
                   {s.posts_found} posts · última coleta {formatDate(s.last_collected_at)}
+                </div>
+                <div className="small muted">
+                  próxima coleta automática: {s.next_collect_at ? formatDate(s.next_collect_at) : 'em breve'}
                 </div>
               </div>
               <button
@@ -99,9 +122,12 @@ export default function Monitoring() {
       )}
 
       {open && (
-        <Modal title="Nova fonte monitorada" onClose={() => setOpen(false)}>
+        <Modal
+          title={`Nova fonte monitorada — ${platform === 'threads' ? 'Threads' : 'X'}`}
+          onClose={() => setOpen(false)}
+        >
           <div className="field">
-            <label className="label">Username no X</label>
+            <label className="label">Username no {platform === 'threads' ? 'Threads' : 'X'}</label>
             <input
               className="input"
               value={username}

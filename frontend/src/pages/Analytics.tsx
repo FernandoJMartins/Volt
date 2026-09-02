@@ -217,7 +217,7 @@ export default function Analytics() {
                       <div className="small muted">
                         {formatDate(p.published_at)} ·{' '}
                         <a href={p.url} target="_blank" rel="noreferrer">
-                          ver no X
+                          ver no {account.platform === 'threads' ? 'Threads' : 'X'}
                         </a>
                       </div>
                     </div>

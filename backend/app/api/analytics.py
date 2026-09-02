@@ -14,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import current_user
 from app.db import get_db
-from app.models import MonitoredAccount, PostStats, ScheduledPost, SourcePost, User, XAccount
+from app.models import Account, MonitoredAccount, PostStats, ScheduledPost, SourcePost, User
 from app.services import analytics as an
+from app.services import platform_web
 from app.services.scheduling import distribute_slots
 from app.workers import enqueue
 
@@ -24,7 +25,7 @@ router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 LOOKBACK_DAYS = 90
 
 
-def _account_tz(account: XAccount):
+def _account_tz(account: Account):
     try:
         return ZoneInfo(account.timezone or "UTC")
     except Exception:  # noqa: BLE001
@@ -58,9 +59,9 @@ async def overview(
 ):
     """Agregado por conta: volume, engajamento medio, mapa por hora do dia,
     melhores horarios e posts recentes com metricas."""
-    accounts_q = select(XAccount).where(XAccount.user_id == user.id)
+    accounts_q = select(Account).where(Account.user_id == user.id)
     if account_id is not None:
-        accounts_q = accounts_q.where(XAccount.id == account_id)
+        accounts_q = accounts_q.where(Account.id == account_id)
     accounts = (await db.execute(accounts_q)).scalars().all()
 
     since = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
@@ -77,16 +78,16 @@ async def overview(
     published_by_account = dict(
         (
             await db.execute(
-                select(ScheduledPost.x_account_id, func.count())
+                select(ScheduledPost.account_id, func.count())
                 .where(ScheduledPost.user_id == user.id, ScheduledPost.status == "published")
-                .group_by(ScheduledPost.x_account_id)
+                .group_by(ScheduledPost.account_id)
             )
         ).all()
     )
 
     by_account: dict[int, list] = {}
     for stat, post in rows:
-        by_account.setdefault(stat.x_account_id, []).append((stat, post))
+        by_account.setdefault(stat.account_id, []).append((stat, post))
 
     out = []
     for acc in accounts:
@@ -109,7 +110,7 @@ async def overview(
             recent.append(
                 {
                     "id": post.id,
-                    "url": f"https://x.com/{acc.username}/status/{post.published_post_id}",
+                    "url": platform_web.driver_for(acc.platform).post_url(acc.username, post.published_post_id),
                     "text": (post.candidate.generated_text if post.candidate else "")[:140],
                     "published_at": post.scheduled_at,
                     "likes": stat.likes,
@@ -124,6 +125,7 @@ async def overview(
         out.append(
             {
                 "account_id": acc.id,
+                "platform": acc.platform,
                 "username": acc.username,
                 "display_name": acc.display_name,
                 "avatar_url": acc.avatar_url,
@@ -239,7 +241,7 @@ async def best_times(
     Sem dados suficientes, cai no espalhamento uniforme (source=fallback) —
     a otimizacao nunca bloqueia o agendamento.
     """
-    account = await db.get(XAccount, account_id)
+    account = await db.get(Account, account_id)
     if not account or account.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta nao encontrada")
 
@@ -248,7 +250,7 @@ async def best_times(
         await db.execute(
             select(PostStats, ScheduledPost)
             .join(ScheduledPost, ScheduledPost.id == PostStats.scheduled_post_id)
-            .where(PostStats.x_account_id == account.id, ScheduledPost.scheduled_at >= since)
+            .where(PostStats.account_id == account.id, ScheduledPost.scheduled_at >= since)
         )
     ).all()
 
@@ -291,7 +293,7 @@ async def refresh(
     db: AsyncSession = Depends(get_db),
 ):
     """Dispara agora a coleta de engajamento da conta (1 navegacao no navegador)."""
-    account = await db.get(XAccount, account_id)
+    account = await db.get(Account, account_id)
     if not account or account.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Conta nao encontrada")
     if not account.session_state_encrypted:

@@ -33,8 +33,12 @@ const del = <T,>(p: string) => request<T>(p, { method: 'DELETE' })
 
 // ---------- Tipos ----------
 
-export type XAccount = {
+export type Platform = 'x' | 'threads'
+
+export type Account = {
   id: number
+  /** Plataforma da conta — decide qual driver de navegador/UX é usado. */
+  platform: Platform
   username: string
   display_name: string
   avatar_url: string
@@ -59,21 +63,34 @@ export type XAccount = {
   /** 'ai' (Ollama/Anthropic, mais lento e melhor) ou 'fast' (reescrita local
       sem IA, instantânea e mais mecânica). Só importa com auto_pilot ligado. */
   content_mode: 'ai' | 'fast'
+  /** Todo post precisa de mídia própria/licenciada pra ser aprovado. Por
+      conta — Threads não exige como o X. */
+  media_required: boolean
+  /** Link próprio da conta (ex: página no Spectrum Red). Preenchido, qualquer
+      link do Telegram no texto copiado de uma fonte é trocado por este. */
+  redirect_url: string
 }
+
+/** @deprecated use `Account` — mantido pra não quebrar imports existentes. */
+export type XAccount = Account
 
 export type MonitoredAccount = {
   id: number
+  platform: Platform
   username: string
   display_name: string
   source_type: 'manual' | 'web'
   is_active: boolean
   last_collected_at: string | null
+  /** Proxima coleta automatica (sweep periodico, com jitter). null = ainda nao calculada (roda no proximo sweep). */
+  next_collect_at: string | null
   posts_found: number
   posts_per_collect: number
 }
 
 export type SourcePost = {
   id: number
+  platform: Platform
   text: string
   author_username: string
   monitored_account_id: number | null
@@ -101,6 +118,7 @@ export type Candidate = {
   source_post_id: number | null
   target_x_account_id: number | null
   account_username: string | null
+  platform: Platform
   created_at: string
 }
 
@@ -114,6 +132,9 @@ export type QueueItem = {
   published_post_id: string
   x_account_id: number
   account_username: string | null
+  platform: Platform
+  /** URL do post publicado, ja' montada pro dominio certo (X ou Threads). null se ainda nao publicou. */
+  post_url: string | null
   text: string
 }
 
@@ -163,6 +184,7 @@ export type RecentPostStat = {
 
 export type AccountAnalytics = {
   account_id: number
+  platform: Platform
   username: string
   display_name: string
   avatar_url: string
@@ -214,18 +236,19 @@ export const api = {
 
   stats: () => get<Stats>('/dashboard/stats'),
 
-  xAccounts: () => get<XAccount[]>('/x/accounts'),
-  importCookies: (cookiesText: string) =>
-    post<{ account: XAccount; session_valid: boolean; username: string }>(
+  xAccounts: (platform?: Platform) =>
+    get<Account[]>(`/x/accounts${platform ? `?platform=${platform}` : ''}`),
+  importCookies: (cookiesText: string, platform: Platform = 'x') =>
+    post<{ account: Account; session_valid: boolean; username: string }>(
       '/x/accounts/browser/import-cookies',
-      { cookies_text: cookiesText },
+      { cookies_text: cookiesText, platform },
     ),
   importCookiesInto: (id: number, cookiesText: string) =>
-    post<{ account: XAccount; session_valid: boolean; username: string }>(
+    post<{ account: Account; session_valid: boolean; username: string }>(
       `/x/accounts/${id}/browser/cookies`,
       { cookies_text: cookiesText },
     ),
-  updateXAccount: (id: number, body: Partial<XAccount>) => patch<XAccount>(`/x/accounts/${id}`, body),
+  updateXAccount: (id: number, body: Partial<Account>) => patch<Account>(`/x/accounts/${id}`, body),
   deleteXAccount: (id: number) => del(`/x/accounts/${id}`),
 
   monitored: () => get<MonitoredAccount[]>('/monitoring/accounts'),
@@ -233,6 +256,7 @@ export const api = {
     username: string
     source_type?: string
     posts_per_collect?: number
+    platform?: Platform
   }) => post('/monitoring/accounts', body),
   updateMonitored: (
     id: number,

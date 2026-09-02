@@ -11,21 +11,22 @@ from app.config import settings
 # Desde a Fase 4 o Alembic e' a fonte da verdade para MUDANCAS NOVAS (ver alembic/);
 # estas linhas ficam como rede de seguranca idempotente para bancos ja criados.
 _ADD_COLUMNS = (
-    "ALTER TABLE x_accounts ADD COLUMN IF NOT EXISTS auth_method VARCHAR(16) DEFAULT 'browser'",
-    "ALTER TABLE x_accounts ADD COLUMN IF NOT EXISTS session_state_encrypted TEXT DEFAULT ''",
-    "ALTER TABLE x_accounts ADD COLUMN IF NOT EXISTS session_valid BOOLEAN DEFAULT false",
-    "ALTER TABLE x_accounts ADD COLUMN IF NOT EXISTS session_updated_at TIMESTAMPTZ",
-    "ALTER TABLE x_accounts ADD COLUMN IF NOT EXISTS user_agent VARCHAR(512) DEFAULT ''",
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS auth_method VARCHAR(16) DEFAULT 'browser'",
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS session_state_encrypted TEXT DEFAULT ''",
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS session_valid BOOLEAN DEFAULT false",
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS session_updated_at TIMESTAMPTZ",
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS user_agent VARCHAR(512) DEFAULT ''",
 )
 
 # Migracao de schema (idempotente): a UNIQUE global (user_id, x_user_id) explodia
 # quando uma 2a conta browser nascia com x_user_id='' (placeholder pre-login).
 # Troca por um indice unico PARCIAL, que so vale para x_user_id real.
 # Ordem importa: drop da constraint (leva junto o indice de mesmo nome) antes do create.
+# Nomes seguem o rename x_accounts -> accounts (ver alembic b7c8d9e0f1a2).
 _SCHEMA_MIGRATIONS = (
-    "ALTER TABLE x_accounts DROP CONSTRAINT IF EXISTS uq_user_xaccount",
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_xaccount"
-    " ON x_accounts (user_id, x_user_id) WHERE x_user_id <> ''",
+    "ALTER TABLE accounts DROP CONSTRAINT IF EXISTS uq_user_xaccount",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_account"
+    " ON accounts (user_id, x_user_id) WHERE x_user_id <> ''",
 )
 
 engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True)

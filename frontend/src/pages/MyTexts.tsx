@@ -1,7 +1,16 @@
 import { useEffect, useState } from 'react'
-import { api, type ManualText, type MediaAsset, type XAccount } from '../api/client'
+import { api, type Account, type ManualText, type MediaAsset } from '../api/client'
 import { IconImage, IconPlus, IconTrash } from '../components/Icons'
-import { Empty, ErrorBanner, Loading, MediaThumb, Modal, TopBar } from '../components/ui'
+import {
+  Empty,
+  ErrorBanner,
+  Loading,
+  MediaThumb,
+  Modal,
+  PlatformTabs,
+  TopBar,
+  usePlatformTab,
+} from '../components/ui'
 
 /** Passos do assistente de criacao em massa. */
 type Step = 1 | 2 | 3
@@ -11,7 +20,8 @@ const STEP_TITLES = ['', 'Escolher mídias', 'Escolher contas', 'Confirmar']
 export default function MyTexts() {
   const [texts, setTexts] = useState<ManualText[]>([])
   const [media, setMedia] = useState<MediaAsset[]>([])
-  const [accounts, setAccounts] = useState<XAccount[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [platform, setPlatform] = usePlatformTab()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -121,11 +131,13 @@ export default function MyTexts() {
   }
 
   const maxPosts = Math.min(pickedTexts.length, 200)
-  const connected = accounts.filter((a) => a.connected)
+  const connected = accounts.filter((a) => a.connected && a.platform === platform)
 
   return (
     <>
       <TopBar title="Meus Textos" />
+
+      <PlatformTabs value={platform} onChange={setPlatform} />
 
       <div className="card">
         <label className="label">Escreva ou cole seus textos</label>
@@ -286,7 +298,9 @@ export default function MyTexts() {
                 Os posts serão distribuídos aleatoriamente entre as contas escolhidas.
               </p>
               {connected.length === 0 ? (
-                <div className="banner error">Nenhuma conta do X conectada.</div>
+                <div className="banner error">
+                  Nenhuma conta do {platform === 'threads' ? 'Threads' : 'X'} conectada.
+                </div>
               ) : (
                 <div className="pick-grid">
                   {connected.map((a) => (

@@ -15,8 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.security import decrypt
-from app.models import MediaAsset, MonitoredAccount, SourcePost, XAccount
-from app.services import x_api, x_web
+from app.models import Account, MediaAsset, MonitoredAccount, SourcePost
+from app.services import platform_web, x_api
 from app.services.browser import SessionExpired, manager as browser_manager
 from app.services.storage import classify, storage
 
@@ -39,7 +39,7 @@ class SourceProvider(ABC):
     async def fetch_new(
         self, db: AsyncSession, account: MonitoredAccount, max_posts: int = 15
     ) -> list[dict]:
-        """Retorna posts normalizados. O chamador deduplica por x_post_id."""
+        """Retorna posts normalizados. O chamador deduplica por platform_post_id."""
 
 
 class XApiProvider(SourceProvider):
@@ -51,8 +51,8 @@ class XApiProvider(SourceProvider):
     ) -> list[dict]:
         token_row = (
             await db.execute(
-                select(XAccount).where(
-                    XAccount.user_id == account.user_id, XAccount.is_active.is_(True)
+                select(Account).where(
+                    Account.user_id == account.user_id, Account.is_active.is_(True)
                 )
             )
         ).scalars().first()
@@ -104,8 +104,9 @@ def _parse_ts(value: str | None) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-async def _reader_account(db: AsyncSession, user_id: int) -> XAccount | None:
-    """Escolhe uma conta logada (sessao valida) para navegar e ler os perfis.
+async def _reader_account(db: AsyncSession, user_id: int, platform: str) -> Account | None:
+    """Escolhe uma conta logada (sessao valida) DA MESMA PLATAFORMA pra navegar e
+    ler os perfis (uma conta do X nao serve pra ler o Threads e vice-versa).
 
     A leitura via navegador exige estar logado; usamos a primeira conta do usuario
     com sessao valida como "leitora". Isolamento e' preservado: a coleta abre o
@@ -113,11 +114,12 @@ async def _reader_account(db: AsyncSession, user_id: int) -> XAccount | None:
     """
     return (
         await db.execute(
-            select(XAccount).where(
-                XAccount.user_id == user_id,
-                XAccount.is_active.is_(True),
-                XAccount.session_valid.is_(True),
-            ).order_by(XAccount.id)
+            select(Account).where(
+                Account.user_id == user_id,
+                Account.platform == platform,
+                Account.is_active.is_(True),
+                Account.session_valid.is_(True),
+            ).order_by(Account.id)
         )
     ).scalars().first()
 
@@ -182,24 +184,26 @@ class PlaywrightProvider(SourceProvider):
     async def fetch_new(
         self, db: AsyncSession, account: MonitoredAccount, max_posts: int = 15
     ) -> list[dict]:
-        reader = await _reader_account(db, account.user_id)
+        reader = await _reader_account(db, account.user_id, account.platform)
         if reader is None:
             log.warning(
-                "Fonte @%s: nenhuma conta com sessao valida para ler. Faca login numa conta.",
+                "Fonte @%s: nenhuma conta de %s com sessao valida para ler. Faca login numa conta.",
                 account.username,
+                account.platform,
             )
             return []
 
+        driver = platform_web.driver_for(account.platform)
         try:
             async with browser_manager.session(reader) as (page, _ctx):
-                if not await x_web.is_logged_in(page):
+                if not await driver.is_logged_in(page):
                     reader.session_valid = False
                     await db.commit()
                     raise SessionExpired(f"Conta leitora @{reader.username} deslogou.")
                 # Sem since_id: a coleta le os ultimos `max_posts` e quem deduplica
                 # e' o chamador (already_seen). Assim aumentar a quantidade puxa
                 # posts mais antigos sem duplicar os que ja' entraram.
-                posts = await x_web.fetch_timeline(
+                posts = await driver.fetch_timeline(
                     page, account.username, max_posts=clamp_collect_count(max_posts)
                 )
                 # Baixa a midia do perfil (imagens) como referencia — mesmo
@@ -233,6 +237,8 @@ def get_provider(source_type: str | None = None) -> SourceProvider:
     return _WEB
 
 
-async def already_seen(db: AsyncSession, x_post_id: str) -> bool:
-    found = await db.execute(select(SourcePost.id).where(SourcePost.x_post_id == x_post_id))
+async def already_seen(db: AsyncSession, platform_post_id: str) -> bool:
+    found = await db.execute(
+        select(SourcePost.id).where(SourcePost.platform_post_id == platform_post_id)
+    )
     return found.scalar_one_or_none() is not None

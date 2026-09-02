@@ -124,3 +124,24 @@ def test_has_auth_token() -> None:
     assert has_auth_token({"cookies": [{"name": "auth_token", "value": "x"}]})
     assert not has_auth_token({"cookies": [{"name": "auth_token", "value": ""}]})
     assert not has_auth_token({"cookies": [{"name": "ct0", "value": "x"}]})
+
+
+def test_threads_platform_keeps_only_threads_domain() -> None:
+    dump = (
+        ".threads.com\tTRUE\t/\tTRUE\t1803911624\tsessionid\tABC123\n"
+        ".x.com\tTRUE\t/\tTRUE\t1777777777\tauth_token\tshould-drop\n"
+    )
+    state = parse_cookie_dump(dump, platform="threads")
+    assert [c["name"] for c in state["cookies"]] == ["sessionid"]
+    assert has_auth_token(state, platform="threads")
+    assert not has_auth_token(state, platform="x")
+
+
+def test_threads_platform_rejects_x_only_dump() -> None:
+    with pytest.raises(CookieImportError):
+        parse_cookie_dump(".x.com\tTRUE\t/\tTRUE\t1777777777\tauth_token\tABC\n", platform="threads")
+
+
+def test_unknown_platform_raises() -> None:
+    with pytest.raises(CookieImportError):
+        parse_cookie_dump(".x.com\tTRUE\t/\tTRUE\t1777777777\tauth_token\tABC\n", platform="bluesky")

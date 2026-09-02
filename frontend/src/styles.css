@@ -11,6 +11,10 @@
   --accent: #1d9bf0;
   --accent-hover: #1a8cd8;
   --accent-soft: rgba(29, 155, 240, 0.1);
+  /* Selo de plataforma do Threads — cor propria so' pra diferenciar do azul
+     do X na UI (o Threads em si nao tem cor de marca, e' P&B). */
+  --accent-threads: #8b5cf6;
+  --accent-threads-soft: rgba(139, 92, 246, 0.12);
   --danger: #f4212e;
   --success: #00ba7c;
   --warn: #ffd400;
@@ -451,6 +455,19 @@ a {
 .pill.scheduled {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+/* Selo de plataforma (X / Threads) — usado em cards de conta, fila, analytics. */
+.pill.platform-x {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.pill.platform-threads {
+  background: var(--accent-threads-soft);
+  border-color: transparent;
+  color: var(--accent-threads);
 }
 
 .input,

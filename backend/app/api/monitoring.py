@@ -18,6 +18,7 @@ class MonitoredIn(BaseModel):
     display_name: str = ""
     x_user_id: str = ""
     source_type: str = "web"
+    platform: str = "x"
     # Quantos posts puxar por coleta (1..100). Coleta e' idempotente: posts
     # ja' coletados nunca duplicam.
     posts_per_collect: int = Field(default=15, ge=1, le=100)
@@ -55,9 +56,11 @@ async def list_monitored(user: User = Depends(current_user), db: AsyncSession = 
             "id": r.id,
             "username": r.username,
             "display_name": r.display_name,
+            "platform": r.platform,
             "source_type": r.source_type,
             "is_active": r.is_active,
             "last_collected_at": r.last_collected_at,
+            "next_collect_at": r.next_collect_at,
             "posts_found": counts.get(r.id, 0),
             "posts_per_collect": r.posts_per_collect,
             "engagement_baseline": r.engagement_baseline or {},
@@ -75,6 +78,7 @@ async def add_monitored(
         username=body.username.lstrip("@"),
         display_name=body.display_name,
         x_user_id=body.x_user_id,
+        platform=body.platform if body.platform in ("x", "threads") else "x",
         source_type=body.source_type if body.source_type in ("manual", "web", "x_api") else "web",
         posts_per_collect=max(1, min(body.posts_per_collect, 100)),
     )
@@ -213,6 +217,7 @@ def _serialize_post(post: SourcePost, assets_by_id: dict) -> dict:
             )
     return {
         "id": post.id,
+        "platform": post.platform,
         "text": post.text,
         "author_username": post.author_username,
         "monitored_account_id": post.monitored_account_id,

@@ -10,6 +10,7 @@ from app.services.dedup import content_hash, find_conflict, normalize, similarit
 from app.services.scheduling import distribute_slots, fit_window
 from app.services.reword import reword
 from app.services.ai import _parse_angles
+from app.services.links import replace_telegram_links
 
 
 # ---------------- scoring ----------------
@@ -153,17 +154,60 @@ def test_fit_window_after_rolls_to_next_day_opening() -> None:
     assert fit_window(moment, "08:00", "23:00") == datetime(2026, 1, 2, 8, 0)
 
 
-def test_reword_stays_within_limit_and_nonempty() -> None:
+async def test_reword_stays_within_limit_and_nonempty(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import synonyms
+
+    async def _no_lookup(word: str) -> list[str]:
+        return []
+
+    monkeypatch.setattr(synonyms, "lookup", _no_lookup)
     text = "Hoje eu quero muito sair com minha amiga a noite."
-    out = reword(text, limit=280)
+    out = await reword(text, limit=280)
     assert out
     assert len(out) <= 280
 
 
-def test_reword_untouched_text_passes_through() -> None:
-    # Nenhuma palavra do dicionario: devolve o texto (so' aparado no limite).
+async def test_reword_untouched_words_still_get_case_flipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Nenhuma palavra do dicionario/API: ainda assim o texto inteiro vira o
+    # OPOSTO do case original (aqui, tudo minusculo -> sai tudo maiusculo).
+    from app.services import synonyms
+
+    async def _no_lookup(word: str) -> list[str]:
+        return []
+
+    monkeypatch.setattr(synonyms, "lookup", _no_lookup)
+    monkeypatch.setattr("app.services.reword.random.random", lambda: 1.0)  # nunca troca palavra
     text = "xyzabc qwerty foobar"
-    assert reword(text) == text
+    assert await reword(text) == text.upper()
+
+
+async def test_reword_flips_mostly_uppercase_text_to_lowercase(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import synonyms
+
+    async def _no_lookup(word: str) -> list[str]:
+        return []
+
+    monkeypatch.setattr(synonyms, "lookup", _no_lookup)
+    monkeypatch.setattr("app.services.reword.random.random", lambda: 1.0)
+    text = "XYZABC QWERTY FOOBAR"
+    assert await reword(text) == text.lower()
+
+
+async def test_reword_never_sends_adult_terms_to_external_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import synonyms
+
+    seen: list[str] = []
+
+    async def _record_lookup(word: str) -> list[str]:
+        seen.append(word)
+        return []
+
+    monkeypatch.setattr(synonyms, "lookup", _record_lookup)
+    monkeypatch.setattr("app.services.reword.random.random", lambda: 0.0)  # sempre elegivel
+    await reword("Hoje rolou muito sexo gostoso e putaria xilofone")
+    assert "sexo" not in seen
+    assert "gostoso" not in seen
+    assert "putaria" not in seen
 
 
 def test_parse_angles_well_formed_json() -> None:
@@ -182,3 +226,36 @@ def test_parse_angles_truncated_json_recovers_valid_items() -> None:
 
 def test_parse_angles_plain_text_fallback() -> None:
     assert _parse_angles("Uma linha qualquer sem JSON", 1) == ["Uma linha qualquer sem JSON"]
+
+
+# ---------------- links (troca de link do Telegram) ----------------
+
+
+def test_replace_telegram_links_swaps_clean_url() -> None:
+    text = "confira no meu grupo https://t.me/exemplo agora"
+    out = replace_telegram_links(text, "https://www.spectrumred.com/r/bianca")
+    assert out == "confira no meu grupo https://www.spectrumred.com/r/bianca agora"
+
+
+def test_replace_telegram_links_case_insensitive_and_subdomain() -> None:
+    text = "link: https://sub.Telegram.Dog/xyz123"
+    out = replace_telegram_links(text, "https://redirect.example/x")
+    assert out == "link: https://redirect.example/x"
+
+
+def test_replace_telegram_links_handles_wrapped_scraped_url() -> None:
+    # Padrao real de scraping do X: protocolo e dominio quebrados em linhas.
+    text = "Entre no CLUB\n\nhttp://\nTelegram.me/clubdoscorninh"
+    out = replace_telegram_links(text, "https://redirect.example/x")
+    assert out == "Entre no CLUB\n\nhttps://redirect.example/x"
+
+
+def test_replace_telegram_links_leaves_other_domains_untouched() -> None:
+    text = "veja em https://x.com/perfil/status/123 e depois no grupo"
+    out = replace_telegram_links(text, "https://redirect.example/x")
+    assert out == text
+
+
+def test_replace_telegram_links_noop_without_redirect_url() -> None:
+    text = "grupo em https://t.me/exemplo"
+    assert replace_telegram_links(text, "") == text

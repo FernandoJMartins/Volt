@@ -14,19 +14,29 @@ Formatos aceitos (autodetectados pela primeira linha):
   - JSON: lista de cookies (estilo EditThisCookie / Playwright).
   - JSON: storage_state completo do Playwright ({"cookies": [...], "origins": [...]}).
 
-So' cookies de dominios do X (x.com / twitter.com, com subdominios) sao
-aproveitados; todo o resto e' descartado de proposito — este modulo nao e' um
-importador generico, e' um cano estreito que so' deixa passar o que a camada de
-navegador deste projeto usa.
+So' cookies do dominio da PLATAFORMA sendo importada (x.com/twitter.com pro X,
+threads.com pro Threads) sao aproveitados; todo o resto e' descartado de
+proposito — este modulo nao e' um importador generico, e' um cano estreito que
+so' deixa passar o que a camada de navegador deste projeto usa.
 
 Este modulo e' puro (so' stdlib): nenhum processo, banco ou rede envolvido.
 """
 
 import json
 
-# Dominios aceitos. Cookies do X costumam vir com dominio ".x.com" (host-only
-# quando nao). twitter.com ainda existe como legado de dominios antigos.
-_ALLOWED_SUFFIXES = ("x.com", "twitter.com")
+# Dominios aceitos por plataforma. Cookies do X costumam vir com dominio
+# ".x.com" (host-only quando nao); twitter.com ainda existe como legado.
+# threads.com e' o dominio atual do Threads (a Meta migrou de threads.net).
+_ALLOWED_SUFFIXES_BY_PLATFORM: dict[str, tuple[str, ...]] = {
+    "x": ("x.com", "twitter.com"),
+    "threads": ("threads.com", "threads.net"),
+}
+
+# Cookie que confirma sessao autenticada, por plataforma.
+_AUTH_COOKIE_BY_PLATFORM: dict[str, str] = {
+    "x": "auth_token",
+    "threads": "sessionid",
+}
 
 # Teto de defesa (anti-lixo/anti-abuso), NAO limite do que e' aproveitado: um
 # export "all cookies" de um navegador com muitos sites pode passar de 256 KB,
@@ -39,9 +49,10 @@ class CookieImportError(ValueError):
     """Despejo ilegivel ou sem nenhum cookie do X aproveitavel."""
 
 
-def _domain_allowed(domain: str) -> bool:
+def _domain_allowed(domain: str, platform: str) -> bool:
     d = (domain or "").strip().lower().lstrip(".")
-    return any(d == suffix or d.endswith("." + suffix) for suffix in _ALLOWED_SUFFIXES)
+    suffixes = _ALLOWED_SUFFIXES_BY_PLATFORM.get(platform, ())
+    return any(d == suffix or d.endswith("." + suffix) for suffix in suffixes)
 
 
 def _same_site_of(raw: dict, secure: bool) -> str:
@@ -53,17 +64,17 @@ def _same_site_of(raw: dict, secure: bool) -> str:
     return "None" if secure else "Lax"
 
 
-def _to_pw_cookie(raw: dict) -> dict | None:
+def _to_pw_cookie(raw: dict, platform: str) -> dict | None:
     """Normaliza um cookie dict (qualquer dialeto) para o formato do Playwright.
 
-    Devolve None quando o cookie nao presta (sem nome/valor ou dominio fora do X).
+    Devolve None quando o cookie nao presta (sem nome/valor ou dominio fora da plataforma).
     """
     name = raw.get("name")
     value = raw.get("value")
     if not isinstance(name, str) or not name or value is None or value == "":
         return None
     domain = str(raw.get("domain") or "").strip().lower()
-    if not _domain_allowed(domain):
+    if not _domain_allowed(domain, platform):
         return None
     if not domain.startswith("."):
         domain = "." + domain
@@ -96,7 +107,7 @@ def _to_pw_cookie(raw: dict) -> dict | None:
     }
 
 
-def _parse_netscape(text: str) -> list[dict]:
+def _parse_netscape(text: str, platform: str) -> list[dict]:
     """Linhas `domain  flag  path  secure  expiry  name  value` (tab-separadas).
 
     Extensoes de exportacao marcam cookies httpOnly com o prefixo `#HttpOnly_`;
@@ -128,7 +139,8 @@ def _parse_netscape(text: str) -> list[dict]:
                 "expirationDate": float(expiry) if expiry not in ("", "0") else -1,
                 "httpOnly": http_only,
                 "secure": secure_flag.strip().upper() == "TRUE",
-            }
+            },
+            platform,
         )
         if norm:
             cookies.append(norm)
@@ -139,7 +151,7 @@ def _looks_like_cookie(data: dict) -> bool:
     return "name" in data and ("value" in data or "Value" in data)
 
 
-def _parse_json(text: str) -> tuple[list[dict], list[dict]]:
+def _parse_json(text: str, platform: str) -> tuple[list[dict], list[dict]]:
     data = json.loads(text)
     cookies_raw: object
     origins_raw: object = []
@@ -160,50 +172,55 @@ def _parse_json(text: str) -> tuple[list[dict], list[dict]]:
     for item in cookies_raw:
         if not isinstance(item, dict):
             continue
-        norm = _to_pw_cookie(item)
+        norm = _to_pw_cookie(item, platform)
         if norm:
             cookies.append(norm)
     return cookies, origins_raw if isinstance(origins_raw, list) else []
 
 
-def _filter_origins(origins: list) -> list[dict]:
-    """Mantem so' localStorage de origens do X; o resto nao entra no estado."""
+def _filter_origins(origins: list, platform: str) -> list[dict]:
+    """Mantem so' localStorage de origens da plataforma; o resto nao entra no estado."""
     kept: list[dict] = []
     for entry in origins:
         if not isinstance(entry, dict):
             continue
         origin = str(entry.get("origin") or "")
         host = origin.split("://")[-1].split("/")[0].split(":")[0].lower()
-        if _domain_allowed(host):
+        if _domain_allowed(host, platform):
             kept.append(entry)
     return kept
 
 
-def parse_cookie_dump(text: str) -> dict:
+def parse_cookie_dump(text: str, platform: str = "x") -> dict:
     """Converte o despejo colado pelo usuario em storage_state do Playwright.
 
-    So' passa o que pertence ao X; qualquer outra coisa e' descartada.
+    `platform` decide o dominio aceito ("x" ou "threads" — ver
+    _ALLOWED_SUFFIXES_BY_PLATFORM). Qualquer outra coisa e' descartada.
     Levanta `CookieImportError` (vira HTTP 400) quando nada e' aproveitavel.
     """
+    if platform not in _ALLOWED_SUFFIXES_BY_PLATFORM:
+        raise CookieImportError(f"plataforma desconhecida: {platform!r}")
     if not text or not text.strip():
         raise CookieImportError("despejo de cookies vazio")
     if len(text.encode("utf-8")) > MAX_DUMP_BYTES:
+        domains = "/".join(_ALLOWED_SUFFIXES_BY_PLATFORM[platform])
         raise CookieImportError(
             f"despejo muito grande (max {MAX_DUMP_BYTES // (1024 * 1024)} MB) — "
-            "exporte apenas os cookies de x.com; cookies de outros sites sao "
+            f"exporte apenas os cookies de {domains}; cookies de outros sites sao "
             "descartados de qualquer forma"
         )
 
     stripped = text.strip()
     if stripped.startswith(("{", "[")):
-        cookies, origins = _parse_json(stripped)
+        cookies, origins = _parse_json(stripped, platform)
     else:
-        cookies, origins = _parse_netscape(stripped), []
+        cookies, origins = _parse_netscape(stripped, platform), []
 
     if not cookies:
+        domains = "/".join(_ALLOWED_SUFFIXES_BY_PLATFORM[platform])
         raise CookieImportError(
-            "nenhum cookie de x.com/twitter.com encontrado — exporte os cookies "
-            "estando logado no X (extensao 'Get cookies.txt LOCALLY' ou equivalente)"
+            f"nenhum cookie de {domains} encontrado — exporte os cookies estando "
+            "logado (extensao 'Get cookies.txt LOCALLY' ou equivalente)"
         )
 
     # Desduplica por (domain, name, path) mantendo a ultima ocorrencia.
@@ -217,12 +234,14 @@ def parse_cookie_dump(text: str) -> dict:
             seen[key] = len(unique)
             unique.append(cookie)
 
-    return {"cookies": unique, "origins": _filter_origins(origins)}
+    return {"cookies": unique, "origins": _filter_origins(origins, platform)}
 
 
-def has_auth_token(state: dict) -> bool:
-    """O cookie `auth_token` e' o que autentica requests no x.com."""
+def has_auth_token(state: dict, platform: str = "x") -> bool:
+    """O cookie de sessao que autentica requests na plataforma (auth_token no
+    X, sessionid no Threads)."""
+    cookie_name = _AUTH_COOKIE_BY_PLATFORM.get(platform, "")
     return any(
-        c.get("name") == "auth_token" and c.get("value")
+        c.get("name") == cookie_name and c.get("value")
         for c in state.get("cookies", [])
     )

@@ -432,6 +432,10 @@ async def publish(page: Page, text: str, media_paths: list[str] | None = None) -
     return await _last_status_id(page)
 
 
+def post_url(username: str, post_id: str) -> str:
+    return f"{BASE}/{username}/status/{post_id}"
+
+
 async def _last_status_id(page: Page) -> str:
     """Melhor esforco: le o id do post no primeiro link de status apos publicar."""
     try:

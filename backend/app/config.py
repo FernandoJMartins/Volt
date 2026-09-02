@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # Modo de coleta/publicacao padrao: "web" (Playwright) ou "api" (X oficial, legado).
     SOURCE_MODE: str = "web"
     # Diretorio de trabalho das sessoes. O estado autenticado vive CRIPTOGRAFADO
-    # no banco (XAccount.session_state_encrypted); este dir guarda apenas caches
+    # no banco (Account.session_state_encrypted); este dir guarda apenas caches
     # efemeros por conta. NUNCA versionar (ver .gitignore).
     SESSIONS_DIR: str = "/data/sessions"
     # Coleta/publicacao rodam headless. O login inicial roda headed (ver x_web.login).
@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # posts publicados (uma navegacao por conta browser conectada).
     ANALYTICS_SWEEP_SECONDS: int = 3600
 
-    # Piloto automatico (opt-in por conta, XAccount.auto_pilot): gera rascunhos
+    # Piloto automatico (opt-in por conta, Account.auto_pilot): gera rascunhos
     # sozinho e agenda no aprovar, sem escolher horario manualmente. Cadencia
     # padrao 1-2h por conta (o minimo configurado na conta, se maior, prevalece).
     AUTOPILOT_SWEEP_SECONDS: int = 1800
@@ -80,6 +80,19 @@ class Settings(BaseSettings):
     AUTOPILOT_MAX_GAP_MINUTES: int = 120
     AUTOPILOT_PER_ACCOUNT_CAP: int = 2  # rascunhos novos por conta por varredura
     AUTOPILOT_AI_TIMEOUT_SECONDS: int = 240  # acima disso, cai pra reescrita rapida
+
+    # Reescrita rapida (app/services/reword.py): busca de sinonimos externa e'
+    # best-effort (scraping de site publico, sem API oficial) — timeout curto e
+    # teto de chamadas por reescrita pra nao comprometer o "instantaneo" do modo.
+    SYNONYM_API_TIMEOUT_SECONDS: float = 2.0
+    SYNONYM_API_MAX_LOOKUPS: int = 4
+
+    # Coleta periodica das contas monitoradas (X e Threads): roda sozinha, sem
+    # precisar clicar em "Coletar". Cadencia ~1x/dia mas com jitter (nunca um
+    # horario redondo fixo, tipo "pessoa real" em vez de robo previsivel).
+    COLLECTION_SWEEP_SECONDS: int = 1800
+    COLLECTION_INTERVAL_MIN_HOURS: float = 20.0
+    COLLECTION_INTERVAL_MAX_HOURS: float = 28.0
 
 
 settings = Settings()

@@ -1,4 +1,4 @@
-"""Piloto automatico (opt-in por conta, XAccount.auto_pilot).
+"""Piloto automatico (opt-in por conta, Account.auto_pilot).
 
 Duas partes:
   - `next_auto_slot`: proximo horario livre pra uma conta (cadencia de
@@ -30,9 +30,9 @@ from app.models import (
     MediaAsset,
     ScheduledPost,
     SourcePost,
-    XAccount,
+    Account,
 )
-from app.services import ai, dedup, reword
+from app.services import ai, dedup, links, reword
 from app.services.scheduling import fit_window
 
 log = logging.getLogger("autopilot")
@@ -50,7 +50,7 @@ def _local_date(dt: datetime, tz: ZoneInfo) -> "datetime.date":
     return dt.astimezone(tz).date()
 
 
-async def _count_scheduled_on(db: AsyncSession, account: XAccount, moment: datetime) -> int:
+async def _count_scheduled_on(db: AsyncSession, account: Account, moment: datetime) -> int:
     tz = _tz(account)
     day = _local_date(moment, tz)
     day_start_local = datetime.combine(day, datetime.min.time(), tzinfo=tz)
@@ -58,7 +58,7 @@ async def _count_scheduled_on(db: AsyncSession, account: XAccount, moment: datet
     rows = (
         await db.execute(
             select(ScheduledPost.scheduled_at).where(
-                ScheduledPost.x_account_id == account.id,
+                ScheduledPost.account_id == account.id,
                 ScheduledPost.status.in_(_COUNTS_TOWARD_DAY),
                 ScheduledPost.scheduled_at >= day_start_local.astimezone(timezone.utc),
                 ScheduledPost.scheduled_at < day_end_local.astimezone(timezone.utc),
@@ -68,14 +68,14 @@ async def _count_scheduled_on(db: AsyncSession, account: XAccount, moment: datet
     return len(rows)
 
 
-def _tz(account: XAccount) -> ZoneInfo:
+def _tz(account: Account) -> ZoneInfo:
     try:
         return ZoneInfo(account.timezone or "UTC")
     except Exception:  # noqa: BLE001
         return ZoneInfo("UTC")
 
 
-async def next_auto_slot(db: AsyncSession, account: XAccount) -> datetime:
+async def next_auto_slot(db: AsyncSession, account: Account) -> datetime:
     """Proximo horario livre pra conta: cadencia 1-2h (piso da conta se maior),
     teto diario (posts_per_day), dentro da janela. Nunca falha — no pior caso
     empurra pro dia seguinte ate achar espaco (limite de 30 dias de seguranca)."""
@@ -87,7 +87,7 @@ async def next_auto_slot(db: AsyncSession, account: XAccount) -> datetime:
     last = (
         await db.execute(
             select(func.max(ScheduledPost.scheduled_at)).where(
-                ScheduledPost.x_account_id == account.id,
+                ScheduledPost.account_id == account.id,
                 ScheduledPost.status.in_(_CADENCE_ANCHOR_STATUSES),
             )
         )
@@ -114,26 +114,32 @@ async def next_auto_slot(db: AsyncSession, account: XAccount) -> datetime:
     return cursor  # limite de seguranca (nao deveria chegar aqui na pratica)
 
 
-async def _generate_text(account: XAccount, source_text: str) -> tuple[str, dict | None]:
-    """(texto, usage_ou_None). usage None = nao usou IA (fast ou fallback)."""
+async def _generate_text(account: Account, source_text: str) -> tuple[str, dict | None]:
+    """(texto, usage_ou_None). usage None = nao usou IA (fast ou fallback).
+
+    Qualquer link do Telegram no texto final e' trocado pelo `redirect_url`
+    da conta (se configurado) — ver app/services/links.py.
+    """
     if account.content_mode == "fast" or not ai.provider.available():
-        return reword.reword(source_text), None
+        text = await reword.reword(source_text)
+        return links.replace_telegram_links(text, account.redirect_url), None
     try:
         angles, usage = await asyncio.wait_for(
             ai.provider.generate_angles(source_text, account.persona_prompt, 1),
             timeout=settings.AUTOPILOT_AI_TIMEOUT_SECONDS,
         )
         if angles:
-            return angles[0][:280], usage
+            return links.replace_telegram_links(angles[0][:280], account.redirect_url), usage
     except Exception as exc:  # noqa: BLE001
         log.warning("Piloto automatico: IA falhou/demorou pra @%s (%s) — caiu pra rapida", account.username, exc)
-    return reword.reword(source_text), None
+    text = await reword.reword(source_text)
+    return links.replace_telegram_links(text, account.redirect_url), None
 
 
 async def sweep(db: AsyncSession) -> dict:
     accounts = (
         await db.execute(
-            select(XAccount).where(XAccount.auto_pilot.is_(True), XAccount.is_active.is_(True))
+            select(Account).where(Account.auto_pilot.is_(True), Account.is_active.is_(True))
         )
     ).scalars().all()
 
@@ -147,7 +153,7 @@ async def sweep(db: AsyncSession) -> dict:
         pending_backlog = (
             await db.execute(
                 select(func.count()).select_from(ContentCandidate).where(
-                    ContentCandidate.target_x_account_id == account.id,
+                    ContentCandidate.target_account_id == account.id,
                     ContentCandidate.status == "pending",
                 )
             )
@@ -167,6 +173,7 @@ async def sweep(db: AsyncSession) -> dict:
                 select(SourcePost)
                 .where(
                     SourcePost.user_id == account.user_id,
+                    SourcePost.platform == account.platform,
                     ~exists(used.where(ContentCandidate.source_post_id == SourcePost.id)),
                 )
                 .order_by(SourcePost.score.desc())
@@ -178,7 +185,7 @@ async def sweep(db: AsyncSession) -> dict:
             continue
 
         media_pool: list[MediaAsset] = []
-        if settings.MEDIA_REQUIRED:
+        if account.media_required:
             media_pool = (
                 await db.execute(
                     select(MediaAsset).where(
@@ -203,7 +210,7 @@ async def sweep(db: AsyncSession) -> dict:
             candidate = ContentCandidate(
                 user_id=account.user_id,
                 source_post_id=post.id,
-                target_x_account_id=account.id,
+                target_account_id=account.id,
                 generated_text=text,
                 origin="ai" if usage else "manual",
                 status="pending",

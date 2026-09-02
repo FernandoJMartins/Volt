@@ -199,7 +199,7 @@ export default function Compose() {
           <label className="label">Conta destino</label>
           {accounts.length === 0 ? (
             <div className="banner error" style={{ margin: 0 }}>
-              Nenhuma conta do X conectada. Conecte uma em Contas.
+              Nenhuma conta conectada. Conecte uma em Contas.
             </div>
           ) : (
             <select
@@ -209,7 +209,7 @@ export default function Compose() {
             >
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  @{a.username}
+                  [{a.platform === 'threads' ? 'Threads' : 'X'}] @{a.username}
                 </option>
               ))}
             </select>
