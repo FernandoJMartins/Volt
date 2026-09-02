@@ -206,9 +206,10 @@ export default function Inbox() {
       )}
 
       {editing && (
-        <Modal title="Editar conteúdo" onClose={() => setEditing(null)}>
+        <Modal title="Editar conteúdo" onClose={() => setEditing(null)} maxWidth={720}>
           <textarea
             className="textarea"
+            style={{ minHeight: 280, fontSize: 16, lineHeight: 1.5 }}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             maxLength={280}

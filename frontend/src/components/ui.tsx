@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { IconHeart, IconPlatformThreads, IconPlatformX, IconRepost, IconReply, IconViews } from './Icons'
 import type { Platform, SourcePost } from '../api/client'
 
@@ -82,14 +82,35 @@ export function Modal({
   title,
   onClose,
   children,
+  maxWidth,
 }: {
   title: ReactNode
   onClose: () => void
   children: ReactNode
+  /** Sobrescreve o max-width padrao (560px) — usado por formularios maiores. */
+  maxWidth?: number
 }) {
+  // Fecha so' quando o CLIQUE INTEIRO (mousedown + mouseup) acontece no
+  // backdrop. Sem isso, selecionar texto dentro do modal e soltar o mouse
+  // fora dele (comum ao arrastar a selecao ate' a borda) fechava o modal —
+  // o `click` resultante nasce no ancestral comum (o backdrop) mesmo quando
+  // o gesto comecou dentro do conteudo.
+  const downOnBackdrop = useRef(false)
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        downOnBackdrop.current = e.target === e.currentTarget
+      }}
+      onClick={(e) => {
+        if (downOnBackdrop.current && e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div
+        className="modal"
+        style={maxWidth ? { maxWidth } : undefined}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="row" style={{ marginBottom: 16 }}>
           <h2 style={{ margin: 0, fontSize: 19 }}>{title}</h2>
           <div className="spacer" style={{ marginLeft: 'auto' }} />
