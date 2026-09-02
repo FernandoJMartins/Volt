@@ -40,7 +40,11 @@ services:
   api:
     build: ./backend
     env_file: .env
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # timeout-graceful-shutdown: sem isso, uma conexao mantida aberta pelo
+    # navegador (fica comum com o painel aberto) faz o --reload travar pra
+    # sempre em "Waiting for connections to close" a cada mudanca de arquivo —
+    # visto varias vezes em producao. 5s e' de sobra pra fechar limpo.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --timeout-graceful-shutdown 5
     restart: unless-stopped
     # Chromium precisa de shm maior; o padrao de 64MB derruba o navegador.
     shm_size: "1gb"
