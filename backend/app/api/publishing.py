@@ -73,7 +73,7 @@ async def list_queue(
     if status_filter:
         query = query.where(ScheduledPost.status == status_filter)
     rows = (
-        await db.execute(query.order_by(ScheduledPost.scheduled_at.asc()).limit(300))
+        await db.execute(query.order_by(ScheduledPost.scheduled_at.desc()).limit(300))
     ).scalars().all()
 
     media_map = await load_media_map(db, [r.content_candidate_id for r in rows])
