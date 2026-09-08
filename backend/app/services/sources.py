@@ -140,7 +140,15 @@ async def _download_post_media(
     IDEMPOTENTE por fora: o chamador pula posts ja' coletados (already_seen) —
     nunca rebaixamos a midia de um post que ja' entrou. Midia de terceiro NAO
     publica (guarda legal do MediaAsset): existe como referencia visual.
+
+    Posts de VIDEO ficam de fora: "images" neles e' so' o poster (thumbnail) do
+    player, nao a midia de verdade. Baixa-lo aqui e usa-lo como `assets` do post
+    fazia o post parecer "sem video" quando a captura do HLS (fetch_media_entities,
+    chamada depois pelo worker) falhava — o poster ficava sozinho no lugar do
+    video real. Melhor deixar sem midia nesse caso do que mostrar so' a thumb.
     """
+    if (post.get("media_metadata") or {}).get("video"):
+        return
     urls = (post.get("media_metadata") or {}).get("images") or []
     urls = urls[: min(4, max(budget[0], 0))]
 

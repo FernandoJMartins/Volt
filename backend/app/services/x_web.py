@@ -220,12 +220,18 @@ def _parse_iso(value: str | None) -> datetime:
         return datetime.now(timezone.utc)
 
 
-async def fetch_media_entities(page: Page, status_id: str, username: str) -> list[dict]:
+async def fetch_media_entities(
+    page: Page, status_id: str, username: str, expect_video: bool = True
+) -> list[dict]:
     """Midia de um tweet visitando a pagina dele (statuses/show.json esta 403).
 
     Video: captura o master playlist HLS da propria rede do navegador e devolve
     com os cookies da sessao (o CDN video.twimg.com exige). Fotos: le os <img>
     da midia do tweet. Devolve [{"type", "url", "mime", ...}]. Nao levanta.
+
+    `expect_video=False` pula o disparo/espera do player (ate ~20s): usado ao
+    reprocessar posts que sabidamente sao so' foto, onde essa espera nunca
+    acha nada e so' desperdica tempo.
     """
     handle = username.lstrip("@")
     captured: list[str] = []
@@ -251,8 +257,10 @@ async def fetch_media_entities(page: Page, status_id: str, username: str) -> lis
         # fossem do post da conta monitorada).
         main_article = await page.query_selector(SEL["tweet"])
 
-        # Forca o player a iniciar (sem autoplay ele nao pede o manifesto).
-        if main_article:
+        async def trigger_play() -> None:
+            """Forca o player a iniciar (sem autoplay ele nao pede o manifesto)."""
+            if not main_article:
+                return
             await main_article.evaluate(
                 """(el) => {
                     const v = el.querySelector('video');
@@ -265,10 +273,27 @@ async def fetch_media_entities(page: Page, status_id: str, username: str) -> lis
                     if (comp && comp !== v) comp.click();
                 }"""
             )
-        # Aguarda o manifesto HLS aparecer na rede (poll, nao sleep fixo).
-        deadline = asyncio.get_event_loop().time() + 12
-        while not captured and asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(1)
+
+        if expect_video:
+            # Logo apos domcontentloaded o player as vezes ainda nao hidratou
+            # (React ainda montando) — chamar play() cedo demais e' clique no
+            # vazio e o manifesto HLS nunca e' pedido. Da' uma folga antes da
+            # 1a tentativa.
+            await asyncio.sleep(1.5)
+            await trigger_play()
+            # Aguarda o manifesto HLS aparecer na rede (poll, nao sleep fixo).
+            # Duas rodadas — se a 1a tentativa nao pediu o manifesto (player
+            # ainda nao pronto, play() ignorado), tenta disparar de novo antes
+            # de desistir. Essa era a causa mais comum da coleta cair no
+            # fallback (so' a thumb do post, sem o video de verdade).
+            deadline = asyncio.get_event_loop().time() + 10
+            while not captured and asyncio.get_event_loop().time() < deadline:
+                await asyncio.sleep(1)
+            if not captured:
+                await trigger_play()
+                deadline = asyncio.get_event_loop().time() + 10
+                while not captured and asyncio.get_event_loop().time() < deadline:
+                    await asyncio.sleep(1)
 
         entities: list[dict] = []
         if captured:
