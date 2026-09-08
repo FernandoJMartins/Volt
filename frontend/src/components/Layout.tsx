@@ -3,6 +3,7 @@ import {
   IconCalendar,
   IconChart,
   IconHome,
+  IconImage,
   IconPencil,
   IconProfile,
   IconSearch,
@@ -16,6 +17,7 @@ const NAV = [
   { to: '/texts', label: 'Meus Textos', Icon: IconPencil },
   { to: '/inbox', label: 'Conteúdo', Icon: IconSparkle },
   { to: '/queue', label: 'Fila', Icon: IconCalendar },
+  { to: '/library', label: 'Biblioteca', Icon: IconImage },
   { to: '/analytics', label: 'Analytics', Icon: IconChart },
   { to: '/accounts', label: 'Contas', Icon: IconProfile },
 ]

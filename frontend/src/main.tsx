@@ -11,6 +11,7 @@ import Analytics from './pages/Analytics'
 import Compose from './pages/Compose'
 import Dashboard from './pages/Dashboard'
 import Inbox from './pages/Inbox'
+import Library from './pages/Library'
 import Login from './pages/Login'
 import Monitoring from './pages/Monitoring'
 import MyTexts from './pages/MyTexts'
@@ -55,6 +56,7 @@ function App() {
           <Route path="/compose" element={<Compose />} />
           <Route path="/compose/:postId" element={<Compose />} />
           <Route path="/queue" element={<Queue />} />
+          <Route path="/library" element={<Library />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/settings" element={<Settings />} />

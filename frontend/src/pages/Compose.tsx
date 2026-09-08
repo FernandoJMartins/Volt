@@ -294,7 +294,7 @@ export default function Compose() {
           <div className="row wrap" style={{ gap: 8, marginTop: 12 }}>
             {media.map((m) => (
               <div key={m.id} style={{ position: 'relative' }}>
-                <MediaThumb item={m} size={84} />
+                <MediaThumb item={m} size={m.kind === 'video' ? 260 : 84} controls={m.kind === 'video'} />
                 <button
                   className="btn danger sm"
                   style={{ position: 'absolute', top: -6, right: -6, padding: '2px 8px' }}

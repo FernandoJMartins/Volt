@@ -4,7 +4,7 @@ import {
   Empty,
   ErrorBanner,
   Loading,
-  MediaStrip,
+  MediaThumb,
   Pill,
   PlatformTabs,
   TopBar,
@@ -68,7 +68,22 @@ export default function Queue() {
             </div>
 
             <p className="post-text">{item.text}</p>
-            <MediaStrip media={item.media} size={56} />
+            {item.media
+              .filter((m) => m.kind === 'video')
+              .map((m) => (
+                <div className="queue-video-wrap" key={m.id}>
+                  <MediaThumb item={m} controls fill />
+                </div>
+              ))}
+            {item.media.filter((m) => m.kind !== 'video').length > 0 && (
+              <div className="row wrap" style={{ gap: 6, margin: '8px 0' }}>
+                {item.media
+                  .filter((m) => m.kind !== 'video')
+                  .map((m) => (
+                    <MediaThumb key={m.id} item={m} size={180} />
+                  ))}
+              </div>
+            )}
 
             {item.last_error && (
               <div className="banner error small">

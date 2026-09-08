@@ -178,16 +178,34 @@ export function MediaThumb({
   item,
   size,
   fill,
+  controls,
 }: {
   item: { kind: string; url: string; filename: string }
   size?: number
   fill?: boolean
+  /** Video maior com os controles nativos (play/pause/volume/tela cheia) em vez
+      do preview minúsculo que só toca no hover. Usado ao anexar mídia própria
+      e na Biblioteca — onde o usuário precisa realmente assistir o vídeo. */
+  controls?: boolean
 }) {
   const style = fill
     ? { width: '100%', height: '100%' }
-    : { width: size ?? 64, height: size ?? 64 }
+    : { width: size ?? (controls ? 220 : 64), height: size ?? (controls ? 220 : 64) }
 
   if (item.kind === 'video') {
+    if (controls) {
+      return (
+        <video
+          className="media-thumb media-preview"
+          src={item.url}
+          controls
+          playsInline
+          preload="metadata"
+          style={style}
+          title={item.filename}
+        />
+      )
+    }
     return (
       <div className="media-thumb video-wrap" style={style} title={item.filename}>
         <video

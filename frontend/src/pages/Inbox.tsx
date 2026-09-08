@@ -4,7 +4,7 @@ import {
   Empty,
   ErrorBanner,
   Loading,
-  MediaStrip,
+  MediaThumb,
   Modal,
   Pill,
   PlatformTabs,
@@ -171,7 +171,22 @@ export default function Inbox() {
             </div>
 
             <p className="post-text">{c.text}</p>
-            <MediaStrip media={c.media} />
+            {c.media
+              .filter((m) => m.kind === 'video')
+              .map((m) => (
+                <div className="queue-video-wrap" key={m.id}>
+                  <MediaThumb item={m} controls fill />
+                </div>
+              ))}
+            {c.media.filter((m) => m.kind !== 'video').length > 0 && (
+              <div className="row wrap" style={{ gap: 6, margin: '8px 0' }}>
+                {c.media
+                  .filter((m) => m.kind !== 'video')
+                  .map((m) => (
+                    <MediaThumb key={m.id} item={m} size={180} />
+                  ))}
+              </div>
+            )}
 
             {c.block_reason && <div className="banner error">{c.block_reason}</div>}
 
