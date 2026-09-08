@@ -89,6 +89,18 @@ export default function Accounts() {
     }
   }
 
+  async function removeProxy() {
+    if (!editing) return
+    try {
+      await api.updateXAccount(editing.id, { proxy_url: '' })
+      setForm({ ...form, proxy_url: '' })
+      setEditing({ ...editing, has_proxy: false, proxy_host: '' })
+      load()
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
   return (
     <>
       <TopBar title="Contas">
@@ -259,22 +271,30 @@ export default function Accounts() {
             <label className="label">
               Proxy dedicado desta conta {editing.has_proxy && '(configurado)'}
             </label>
-            <input
-              className="input"
-              type="text"
-              value={form.proxy_url ?? ''}
-              onChange={(e) => setForm({ ...form, proxy_url: e.target.value })}
-              placeholder={
-                editing.has_proxy
-                  ? `atual: ${editing.proxy_host || '(oculto)'} — cole outro pra trocar`
-                  : 'http://usuario:senha@host:porta (opcional)'
-              }
-            />
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                className="input"
+                type="text"
+                style={{ flex: 1 }}
+                value={form.proxy_url ?? ''}
+                onChange={(e) => setForm({ ...form, proxy_url: e.target.value })}
+                placeholder={
+                  editing.has_proxy
+                    ? `atual: ${editing.proxy_host || '(oculto)'} — cole outro pra trocar`
+                    : 'http://usuario:senha@host:porta (opcional)'
+                }
+              />
+              {editing.has_proxy && (
+                <button className="btn danger sm" type="button" onClick={removeProxy}>
+                  Remover proxy
+                </button>
+              )}
+            </div>
             <div className="small muted" style={{ marginTop: 6 }}>
               Sem proxy, todas as contas saem pelo mesmo IP do servidor — o{' '}
               {PLATFORM_LABEL[editing.platform]} pode correlacionar contas por isso. Preencha
-              para essa conta navegar pelo seu próprio IP. Deixe vazio e salve para remover um
-              proxy já configurado.
+              para essa conta navegar pelo seu próprio IP. Deixe vazio e salve, ou use "Remover
+              proxy", para tirar um proxy já configurado (a conta volta a sair pelo IP do servidor).
             </div>
           </div>
 
