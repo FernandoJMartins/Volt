@@ -13,10 +13,13 @@ import re
 
 # Protocolo e "www." opcionais; aceita qualquer subdominio (ex: sub.t.me) e
 # domina case-insensitive. `\s*` depois do protocolo cobre o caso comum de
-# scraping onde o X quebra o link em linhas ("http://\nt.me/..."). O path
-# (`/\S*`) para no primeiro espaco/quebra de linha.
+# scraping onde o X quebra o link em linhas ("http://\nt.me/..."). O `\s*`
+# antes da barra cobre a quebra cair entre o dominio e o path em vez de
+# entre o protocolo e o dominio ("t.me\n/bot") — sem isso, so' "t.me" era
+# trocado e o resto do path antigo (ex: nome do bot) sobrava no texto. O
+# path (`/\S*`) para no primeiro espaco/quebra de linha.
 _TELEGRAM_RE = re.compile(
-    r"(?:https?://\s*)?(?:www\.)?(?:[a-z0-9-]+\.)*(?:t\.me|telegram\.me|telegram\.dog)(?:/\S*)?",
+    r"(?:https?://\s*)?(?:www\.)?(?:[a-z0-9-]+\.)*(?:t\.me|telegram\.me|telegram\.dog)(?:\s*/\S*)?",
     re.IGNORECASE,
 )
 

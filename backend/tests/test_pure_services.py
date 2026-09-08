@@ -262,6 +262,18 @@ def test_replace_telegram_links_noop_without_redirect_url() -> None:
     assert replace_telegram_links(text, "") == text
 
 
+def test_replace_telegram_links_handles_domain_wrapped_from_path() -> None:
+    # Mesmo padrao de scraping do X do teste acima (link quebrado em linhas),
+    # so' que a quebra cai entre o dominio e a barra do path em vez de entre
+    # o protocolo e o dominio. Hoje o regex so' tolera espaco/quebra de linha
+    # ANTES do dominio (`https?://\s*`) — depois dele, o path so' casa se a
+    # barra vier colada, sem nenhum espaco. Isso deixa o resto do link antigo
+    # (aqui, o nome do bot) sobrando no texto depois da troca.
+    text = "Entra no grupo\n\nhttps://t.me\n/SCORNINHOS_BOT"
+    out = replace_telegram_links(text, "https://spectrumred.site/r/gruposecrtoo?start_param=twitter")
+    assert out == "Entra no grupo\n\nhttps://spectrumred.site/r/gruposecrtoo?start_param=twitter"
+
+
 # ---------------- _resolve_account_key (bug critico: multi-account) ----------------
 
 
