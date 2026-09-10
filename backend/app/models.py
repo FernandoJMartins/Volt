@@ -159,6 +159,10 @@ class ManualSourceText(Base):
     __tablename__ = "manual_source_texts"
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # "x" ou "threads" — pool separado por plataforma (mesma convencao de
+    # Account.platform/SourcePost.platform). O piloto automatico (autopilot.sweep)
+    # so' sorteia texto cuja plataforma bate com a da conta destino.
+    platform: Mapped[str] = mapped_column(String(16), default="x")
     text: Mapped[str] = mapped_column(Text)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

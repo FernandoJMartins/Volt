@@ -27,6 +27,7 @@ from app.models import (
     AuditLog,
     CandidateMedia,
     ContentCandidate,
+    ManualSourceText,
     MediaAsset,
     ScheduledPost,
     SourcePost,
@@ -180,8 +181,29 @@ async def sweep(db: AsyncSession) -> dict:
                 .limit(take)
             )
         ).scalars().all()
-        if not posts:
-            log.info("Piloto automatico: sem post novo pra @%s (colete mais)", account.username)
+
+        # Pool de textos prontos (Meus Textos), da MESMA plataforma da conta —
+        # so' entra em jogo se o perfil da conta aceita post sem midia. Sorteado
+        # abaixo com AUTOPILOT_TEXT_ONLY_CHANCE no lugar de reescrever um post
+        # coletado; sai `pending` igual a qualquer outro rascunho.
+        text_pool: list[ManualSourceText] = []
+        if not account.media_required:
+            text_pool = (
+                await db.execute(
+                    select(ManualSourceText).where(
+                        ManualSourceText.user_id == account.user_id,
+                        ManualSourceText.platform == account.platform,
+                        ManualSourceText.is_active.is_(True),
+                    )
+                )
+            ).scalars().all()
+
+        if not posts and not text_pool:
+            log.info(
+                "Piloto automatico: sem post novo e sem texto cadastrado pra @%s (colete mais "
+                "ou cadastre em Meus Textos)",
+                account.username,
+            )
             continue
 
         media_pool: list[MediaAsset] = []
@@ -202,44 +224,77 @@ async def sweep(db: AsyncSession) -> dict:
                 continue
 
         made_for_account = 0
-        for post in posts:
-            text, usage = await _generate_text(account, post.text)
-            if not text.strip():
-                continue
-
-            candidate = ContentCandidate(
-                user_id=account.user_id,
-                source_post_id=post.id,
-                target_account_id=account.id,
-                generated_text=text,
-                origin="ai" if usage else "manual",
-                status="pending",
-                content_hash=dedup.content_hash(text),
+        post_iter = iter(posts)
+        for _ in range(take):
+            use_text_pool = bool(text_pool) and (
+                random.random() < settings.AUTOPILOT_TEXT_ONLY_CHANCE
             )
-            db.add(candidate)
-            await db.flush()
+            text_row = random.choice(text_pool) if use_text_pool else None
+            post = None if text_row else next(post_iter, None)
+            if post is None and text_row is None:
+                # Sem post e chance nao sorteou (ou pool ja' vazio) — ainda tenta
+                # texto pronto antes de desistir do slot, pra nao devolver menos
+                # do que o pool permite.
+                text_row = random.choice(text_pool) if text_pool else None
+                if text_row is None:
+                    break
 
-            if media_pool:
-                db.add(
-                    CandidateMedia(
-                        content_candidate_id=candidate.id,
-                        media_asset_id=random.choice(media_pool).id,
-                        position=0,
-                    )
+            if text_row is not None:
+                text = links.replace_telegram_links(
+                    text_row.text.strip()[:280], account.redirect_url
                 )
-            if usage:
-                db.add(
-                    AIGeneration(
-                        user_id=account.user_id,
-                        source_post_id=post.id,
-                        target_account_id=account.id,
-                        prompt=usage["prompt"],
-                        response=usage["raw"],
-                        model=usage["model"],
-                        tokens_input=usage["tokens_input"],
-                        tokens_output=usage["tokens_output"],
-                    )
+                if not text.strip():
+                    continue
+                candidate = ContentCandidate(
+                    user_id=account.user_id,
+                    source_post_id=None,
+                    target_account_id=account.id,
+                    generated_text=text,
+                    origin="manual",
+                    status="pending",
+                    content_hash=dedup.content_hash(text),
                 )
+                db.add(candidate)
+                await db.flush()
+                text_row.used_count += 1
+            else:
+                text, usage = await _generate_text(account, post.text)
+                if not text.strip():
+                    continue
+
+                candidate = ContentCandidate(
+                    user_id=account.user_id,
+                    source_post_id=post.id,
+                    target_account_id=account.id,
+                    generated_text=text,
+                    origin="ai" if usage else "manual",
+                    status="pending",
+                    content_hash=dedup.content_hash(text),
+                )
+                db.add(candidate)
+                await db.flush()
+
+                if media_pool:
+                    db.add(
+                        CandidateMedia(
+                            content_candidate_id=candidate.id,
+                            media_asset_id=random.choice(media_pool).id,
+                            position=0,
+                        )
+                    )
+                if usage:
+                    db.add(
+                        AIGeneration(
+                            user_id=account.user_id,
+                            source_post_id=post.id,
+                            target_account_id=account.id,
+                            prompt=usage["prompt"],
+                            response=usage["raw"],
+                            model=usage["model"],
+                            tokens_input=usage["tokens_input"],
+                            tokens_output=usage["tokens_output"],
+                        )
+                    )
             created_total += 1
             made_for_account += 1
             per_account[account.username] = per_account.get(account.username, 0) + 1

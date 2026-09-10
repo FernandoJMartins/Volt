@@ -27,6 +27,7 @@ class MonitoredIn(BaseModel):
 class ManualTextIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     tags: list[str] = []
+    platform: str = "x"
 
 
 # ---------- Contas monitoradas ----------
@@ -144,19 +145,21 @@ async def collect_now(
 
 
 @router.get("/manual-texts")
-async def list_texts(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    rows = (
-        await db.execute(
-            select(ManualSourceText)
-            .where(ManualSourceText.user_id == user.id)
-            .order_by(ManualSourceText.id.desc())
-        )
-    ).scalars().all()
+async def list_texts(
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+    platform: str | None = Query(None),
+):
+    query = select(ManualSourceText).where(ManualSourceText.user_id == user.id)
+    if platform:
+        query = query.where(ManualSourceText.platform == platform)
+    rows = (await db.execute(query.order_by(ManualSourceText.id.desc()))).scalars().all()
     return [
         {
             "id": r.id,
             "text": r.text,
             "tags": r.tags or [],
+            "platform": r.platform,
             "is_active": r.is_active,
             "used_count": r.used_count,
         }
@@ -169,7 +172,15 @@ async def add_texts(
     body: list[ManualTextIn], user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
 ):
     """Aceita lote — o painel permite colar varios textos de uma vez."""
-    rows = [ManualSourceText(user_id=user.id, text=b.text.strip(), tags=b.tags) for b in body]
+    rows = [
+        ManualSourceText(
+            user_id=user.id,
+            text=b.text.strip(),
+            tags=b.tags,
+            platform=b.platform if b.platform in ("x", "threads") else "x",
+        )
+        for b in body
+    ]
     db.add_all(rows)
     await db.commit()
     return {"created": len(rows)}
@@ -182,7 +193,13 @@ async def get_text(
     row = await db.get(ManualSourceText, text_id)
     if not row or row.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Texto nao encontrado")
-    return {"id": row.id, "text": row.text, "tags": row.tags or [], "used_count": row.used_count}
+    return {
+        "id": row.id,
+        "text": row.text,
+        "tags": row.tags or [],
+        "platform": row.platform,
+        "used_count": row.used_count,
+    }
 
 
 @router.delete("/manual-texts/{text_id}")

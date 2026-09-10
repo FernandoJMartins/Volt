@@ -309,7 +309,9 @@ export default function Accounts() {
           <div className="small muted" style={{ marginTop: 4 }}>
             {editing.platform === 'threads'
               ? 'No Threads é comum postar só texto — desative se essa conta não precisar de mídia sempre.'
-              : 'Regra padrão do painel. Desative só se quiser permitir posts só de texto nesta conta.'}
+              : 'Regra padrão do painel. Desative só se quiser permitir posts só de texto nesta conta.'}{' '}
+            Desativado + piloto automático ligado: de vez em quando o gerador sorteia um texto de
+            "Meus Textos" e cria um post só de texto pendente, pra você aprovar.
           </div>
 
           <div className="field" style={{ marginTop: 16 }}>

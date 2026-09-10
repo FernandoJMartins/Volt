@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     AUTOPILOT_MAX_GAP_MINUTES: int = 120
     AUTOPILOT_PER_ACCOUNT_CAP: int = 2  # rascunhos novos por conta por varredura
     AUTOPILOT_AI_TIMEOUT_SECONDS: int = 240  # acima disso, cai pra reescrita rapida
+    # Contas com media_required=False (perfil aceita post so' de texto): chance,
+    # por rascunho gerado na varredura, de sortear um texto pronto do pool
+    # (Meus Textos, da MESMA plataforma da conta) em vez de reescrever um post
+    # coletado. Sai `pending` igual a qualquer outro rascunho do piloto.
+    AUTOPILOT_TEXT_ONLY_CHANCE: float = 0.35
 
     # Reescrita rapida (app/services/reword.py): busca de sinonimos externa e'
     # best-effort (scraping de site publico, sem API oficial) — timeout curto e

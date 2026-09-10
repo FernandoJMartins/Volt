@@ -142,6 +142,9 @@ export type ManualText = {
   id: number
   text: string
   tags: string[]
+  /** Plataforma dona deste texto — o piloto automático só sorteia texto da
+      mesma plataforma da conta destino (ver Account.media_required). */
+  platform: Platform
   is_active: boolean
   used_count: number
 }
@@ -270,10 +273,14 @@ export const api = {
   collectNow: (id: number, maxPosts?: number) =>
     post(`/monitoring/accounts/${id}/collect${maxPosts ? `?max_posts=${maxPosts}` : ''}`),
 
-  manualTexts: () => get<ManualText[]>('/manual-texts'),
+  manualTexts: (platform?: Platform) =>
+    get<ManualText[]>(`/manual-texts${platform ? `?platform=${platform}` : ''}`),
   manualText: (id: number) => get<ManualText>(`/manual-texts/${id}`),
-  addManualTexts: (texts: string[]) =>
-    post<{ created: number }>('/manual-texts', texts.map((text) => ({ text, tags: [] }))),
+  addManualTexts: (texts: string[], platform: Platform) =>
+    post<{ created: number }>(
+      '/manual-texts',
+      texts.map((text) => ({ text, tags: [], platform })),
+    ),
   deleteManualText: (id: number) => del(`/manual-texts/${id}`),
 
   sourcePosts: (order: 'score' | 'recent' = 'score') =>

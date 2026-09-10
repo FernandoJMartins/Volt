@@ -42,7 +42,11 @@ export default function MyTexts() {
   async function load() {
     setLoading(true)
     try {
-      const [t, m, a] = await Promise.all([api.manualTexts(), api.media(), api.xAccounts()])
+      const [t, m, a] = await Promise.all([
+        api.manualTexts(platform),
+        api.media(),
+        api.xAccounts(),
+      ])
       setTexts(t)
       setMedia(m)
       setAccounts(a)
@@ -54,8 +58,10 @@ export default function MyTexts() {
   }
 
   useEffect(() => {
+    setPickedTexts([])
     load()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform])
 
   const blocks = draft
     .split(';')
@@ -67,7 +73,7 @@ export default function MyTexts() {
     setSaving(true)
     setError('')
     try {
-      await api.addManualTexts(blocks)
+      await api.addManualTexts(blocks, platform)
       setDraft('')
       load()
     } catch (err) {
@@ -140,7 +146,9 @@ export default function MyTexts() {
       <PlatformTabs value={platform} onChange={setPlatform} />
 
       <div className="card">
-        <label className="label">Escreva ou cole seus textos</label>
+        <label className="label">
+          Escreva ou cole seus textos ({platform === 'threads' ? 'Threads' : 'X'})
+        </label>
         <textarea
           className="textarea"
           style={{ minHeight: 140 }}
@@ -148,6 +156,11 @@ export default function MyTexts() {
           onChange={(e) => setDraft(e.target.value)}
           placeholder="Primeiro texto; Segundo texto; Terceiro texto"
         />
+        <div className="small muted" style={{ marginTop: 8 }}>
+          Textos ficam separados por plataforma. Em contas do {platform === 'threads' ? 'Threads' : 'X'}{' '}
+          que não exigem mídia (ajuste em Contas), o piloto automático sorteia um desses textos de
+          vez em quando e joga um post só de texto, pendente, em Conteúdo — pra você aprovar.
+        </div>
         <div className="row" style={{ marginTop: 10 }}>
           <span className="small muted">
             {blocks.length > 0
