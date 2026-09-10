@@ -32,6 +32,7 @@ export default function Inbox() {
   const [when, setWhen] = useState('')
   const [notice, setNotice] = useState('')
   const [autoBusy, setAutoBusy] = useState(false)
+  const [approveBusy, setApproveBusy] = useState(false)
   const [autoOpen, setAutoOpen] = useState(false)
   const [startIn, setStartIn] = useState(5)
   const [gapMin, setGapMin] = useState(30)
@@ -72,6 +73,33 @@ export default function Inbox() {
     } finally {
       setAutoBusy(false)
     }
+  }
+
+  async function approveAll() {
+    // Aprova um por um, na ordem exibida — cada item passa pelas mesmas regras
+    // do botao individual (midia obrigatoria por conta, checagem de conteudo
+    // similar entre contas). Itens que falharem sao contados e seguem
+    // pendentes/bloqueados pra revisao manual, sem travar o restante do lote.
+    const targets = visible.filter((c) => c.status === 'pending')
+    if (!targets.length) return
+    setApproveBusy(true)
+    setError('')
+    let ok = 0
+    let failed = 0
+    for (const c of targets) {
+      try {
+        await api.approve(c.id)
+        ok++
+      } catch {
+        failed++
+      }
+    }
+    setNotice(
+      `${ok} post(s) aprovado(s)` +
+        (failed ? `, ${failed} não aprovado(s) (mídia faltando ou conteúdo similar a outra conta — confira em Bloqueados).` : '.'),
+    )
+    setApproveBusy(false)
+    load()
   }
 
   async function load(status = tab) {
@@ -139,6 +167,20 @@ export default function Inbox() {
 
       {error && <ErrorBanner message={error} />}
       {notice && <div className="banner info">{notice}</div>}
+
+      {tab === 'pending' && visible.length > 0 && (
+        <div className="row" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+          <span className="small muted">{visible.length} pendente(s)</span>
+          <button
+            className="btn sm"
+            style={{ marginLeft: 'auto' }}
+            disabled={approveBusy}
+            onClick={approveAll}
+          >
+            {approveBusy ? 'Aprovando...' : 'Aprovar tudo'}
+          </button>
+        </div>
+      )}
 
       {tab === 'approved' && visible.length > 0 && (
         <div className="row" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
