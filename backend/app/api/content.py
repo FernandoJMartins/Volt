@@ -391,7 +391,10 @@ async def create_bulk(
             user_id=user.id,
             action="content.bulk_created",
             entity="content_candidate",
-            entity_id=",".join(str(i) for i in created[:20]),
+            # AuditLog.entity_id e' varchar(64) — com muitos ids (ex: lote de 50)
+            # o join de 20 ids facilmente estoura isso, o que quebrava com 500
+            # em lotes grandes. Corta pro tamanho da coluna.
+            entity_id=",".join(str(i) for i in created[:20])[:64],
             detail={
                 "count": len(created),
                 "accounts": per_account,
@@ -531,7 +534,10 @@ async def bulk_generate(
             user_id=user.id,
             action="content.bulk_generated",
             entity="content_candidate",
-            entity_id=",".join(str(i) for i in created[:20]),
+            # AuditLog.entity_id e' varchar(64) — com muitos ids (ex: lote de 50)
+            # o join de 20 ids facilmente estoura isso, o que quebrava com 500
+            # em lotes grandes. Corta pro tamanho da coluna.
+            entity_id=",".join(str(i) for i in created[:20])[:64],
             detail={"count": len(created), "accounts": per_account, "failed": failed},
         )
     )
