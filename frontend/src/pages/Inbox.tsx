@@ -67,7 +67,7 @@ export default function Inbox() {
       }
       setNotice(`${total} post(s) agendados. Veja em Fila.`)
       setAutoOpen(false)
-      load()
+      load(tab, { silent: true })
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -88,7 +88,7 @@ export default function Inbox() {
     let failed = 0
     for (const c of targets) {
       try {
-        await api.approve(c.id)
+        applyUpdate(await api.approve(c.id))
         ok++
       } catch {
         failed++
@@ -99,18 +99,17 @@ export default function Inbox() {
         (failed ? `, ${failed} não aprovado(s) (mídia faltando ou conteúdo similar a outra conta — confira em Bloqueados).` : '.'),
     )
     setApproveBusy(false)
-    load()
   }
 
-  async function load(status = tab) {
-    setLoading(true)
+  async function load(status = tab, opts: { silent?: boolean } = {}) {
+    if (!opts.silent) setLoading(true)
     setError('')
     try {
       setItems(await api.candidates(status))
     } catch (err) {
       setError((err as Error).message)
     } finally {
-      setLoading(false)
+      if (!opts.silent) setLoading(false)
     }
   }
 
@@ -118,10 +117,25 @@ export default function Inbox() {
     load(tab)
   }, [tab])
 
-  async function act(fn: () => Promise<unknown>) {
+  // Atualiza (ou remove, se o status mudou pra fora da aba atual) um item na
+  // lista local, em vez de refazer o fetch inteiro — refazer o fetch some com
+  // a lista por um instante (loading=true desmonta tudo) e isso reseta o
+  // scroll da pagina pro topo, dando a impressao de que a pagina recarregou.
+  function applyUpdate(updated: Candidate) {
+    setItems((prev) =>
+      updated.status !== tab
+        ? prev.filter((c) => c.id !== updated.id)
+        : prev.map((c) => (c.id === updated.id ? updated : c)),
+    )
+  }
+
+  function removeItem(id: number) {
+    setItems((prev) => prev.filter((c) => c.id !== id))
+  }
+
+  async function act(fn: () => Promise<Candidate>) {
     try {
-      await fn()
-      load()
+      applyUpdate(await fn())
     } catch (err) {
       setError((err as Error).message)
     }
@@ -129,22 +143,27 @@ export default function Inbox() {
 
   async function saveEdit() {
     if (!editing) return
-    await act(async () => {
-      await api.editCandidate(editing.id, draft)
+    try {
+      applyUpdate(await api.editCandidate(editing.id, draft))
       setEditing(null)
-    })
+    } catch (err) {
+      setError((err as Error).message)
+    }
   }
 
   async function confirmSchedule() {
     if (!scheduling) return
-    await act(async () => {
+    try {
       await api.schedule({
         content_candidate_id: scheduling.id,
         scheduled_at: when ? new Date(when).toISOString() : null,
       })
+      removeItem(scheduling.id)
       setScheduling(null)
       setWhen('')
-    })
+    } catch (err) {
+      setError((err as Error).message)
+    }
   }
 
   return (

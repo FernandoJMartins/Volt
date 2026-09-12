@@ -274,6 +274,24 @@ def test_replace_telegram_links_handles_domain_wrapped_from_path() -> None:
     assert out == "Entra no grupo\n\nhttps://spectrumred.site/r/gruposecrtoo?start_param=twitter"
 
 
+def test_replace_telegram_links_handles_path_wrapped_mid_word() -> None:
+    # Padrao real visto em producao: a quebra de linha do scraping cai DENTRO
+    # do proprio path (nome do bot partido ao meio), nao so' entre dominio e
+    # barra. Antes desse fix, so' "clubdoscorninh" era trocado e o resto
+    # ("oscorninhos_bot") sobrava colado no texto final.
+    text = "https://\nTelegram.me/clubdoscorninh\noscorninhos_bot\n…"
+    out = replace_telegram_links(text, "https://spectrumred.site/r/gruposecrtoo?start_param=twitter")
+    assert out == "https://spectrumred.site/r/gruposecrtoo?start_param=twitter…"
+
+
+def test_replace_telegram_links_does_not_eat_real_word_after_link() -> None:
+    # O path so' tolera quebra de LINHA (nao espaco) entre pedacos, senao uma
+    # palavra real separada por espaco logo depois do link seria engolida.
+    text = "confira no meu grupo https://t.me/exemplo agora"
+    out = replace_telegram_links(text, "https://www.spectrumred.com/r/bianca")
+    assert out == "confira no meu grupo https://www.spectrumred.com/r/bianca agora"
+
+
 # ---------------- _resolve_account_key (bug critico: multi-account) ----------------
 
 
