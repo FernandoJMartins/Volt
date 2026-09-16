@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -658,3 +658,32 @@ async def reject(
     await db.commit()
     media = await load_media_map(db, [c.id])
     return _serialize(c, media.get(c.id, []))
+
+
+@router.delete("")
+async def delete_all(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """Apaga TODO o conteudo do usuario, de qualquer status e plataforma.
+
+    O CASCADE no banco tambem remove os itens ligados (midia do candidato e
+    entradas da fila) — e' o "deletar tudo" do painel, sem sobras.
+    """
+    count = (
+        await db.execute(
+            select(func.count())
+            .select_from(ContentCandidate)
+            .where(ContentCandidate.user_id == user.id)
+        )
+    ).scalar_one()
+    if count:
+        await db.execute(delete(ContentCandidate).where(ContentCandidate.user_id == user.id))
+        db.add(
+            AuditLog(
+                user_id=user.id,
+                action="content.deleted_all",
+                entity="content_candidate",
+                entity_id="all",
+                detail={"count": count},
+            )
+        )
+        await db.commit()
+    return {"deleted": count}

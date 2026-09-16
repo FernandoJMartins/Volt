@@ -40,6 +40,8 @@ export default function Inbox() {
   const [horizon, setHorizon] = useState(30)
   const [respectWindow, setRespectWindow] = useState(true)
   const [strategy, setStrategy] = useState<'spread' | 'optimized'>('spread')
+  const [confirmClear, setConfirmClear] = useState(false)
+  const [clearBusy, setClearBusy] = useState(false)
 
   const visible = items.filter((c) => c.platform === platform)
 
@@ -166,9 +168,32 @@ export default function Inbox() {
     }
   }
 
+  async function deleteAll() {
+    // Apaga tudo de uma vez (qualquer status e plataforma) — o backend
+    // tambem remove os itens ligados na fila via CASCADE.
+    setClearBusy(true)
+    setError('')
+    try {
+      const res = await api.deleteAllContent()
+      setNotice(`${res.deleted} conteúdo(s) apagado(s).`)
+      setItems([])
+      setConfirmClear(false)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setClearBusy(false)
+    }
+  }
+
   return (
     <>
-      <TopBar title="Conteúdo" />
+      <TopBar title="Conteúdo">
+        {items.length > 0 && (
+          <button className="btn danger sm" onClick={() => setConfirmClear(true)}>
+            Deletar tudo
+          </button>
+        )}
+      </TopBar>
 
       <PlatformTabs value={platform} onChange={setPlatform} />
 
@@ -409,6 +434,33 @@ export default function Inbox() {
           >
             {autoBusy ? 'Agendando...' : 'Agendar'}
           </button>
+        </Modal>
+      )}
+
+      {confirmClear && (
+        <Modal title="Deletar tudo" onClose={() => setConfirmClear(false)}>
+          <div className="banner error" style={{ marginBottom: 16 }}>
+            Isso apaga TODO o conteúdo do usuário — pendentes, aprovados,
+            bloqueados e publicados, de X e Threads — e também o que estiver
+            ligado a ele na Fila. Não tem como desfazer.
+          </div>
+          <div className="row" style={{ gap: 12 }}>
+            <button
+              className="btn ghost"
+              style={{ flex: 1 }}
+              onClick={() => setConfirmClear(false)}
+            >
+              Cancelar
+            </button>
+            <button
+              className="btn danger"
+              style={{ flex: 1 }}
+              disabled={clearBusy}
+              onClick={deleteAll}
+            >
+              {clearBusy ? 'Apagando...' : 'Apagar tudo'}
+            </button>
+          </div>
         </Modal>
       )}
     </>

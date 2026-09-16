@@ -7,6 +7,7 @@ dependem de Postgres: validam apenas a montagem do app e o registro de rotas.
 import httpx
 
 from app.api.accounts import router as accounts_router
+from app.api.content import router as content_router
 from app.main import app
 
 
@@ -18,6 +19,12 @@ def test_accounts_router_surface() -> None:
     # Fluxo VNC/login headed REMOVIDO — nao pode voltar sem querer.
     assert "/api/x/accounts/browser/login" not in paths
     assert "/api/x/accounts/{account_id}/browser/relogin" not in paths
+
+
+def test_content_router_delete_all_surface() -> None:
+    # "Deletar tudo" do painel — DELETE sem id na raiz do conteudo.
+    routes = {f"{','.join(r.methods)} {getattr(r, 'path', '')}" for r in content_router.routes}
+    assert "DELETE /api/content" in routes
 
 
 async def test_health_endpoint() -> None:

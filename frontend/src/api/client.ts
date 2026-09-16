@@ -356,6 +356,7 @@ export const api = {
   editCandidate: (id: number, text: string) => patch<Candidate>(`/content/${id}`, { text }),
   approve: (id: number) => post<Candidate>(`/content/${id}/approve`),
   reject: (id: number) => post<Candidate>(`/content/${id}/reject`),
+  deleteAllContent: () => del<{ deleted: number }>('/content'),
 
   queue: (status?: string) => get<QueueItem[]>(`/scheduled-posts${status ? `?status=${status}` : ''}`),
   schedule: (body: { content_candidate_id: number; scheduled_at: string | null }) =>
