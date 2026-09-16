@@ -3,6 +3,16 @@
 Setup feito em 2026-08-29. Isto documenta o que já está rodando e o que falta pra
 usar o projeto de verdade.
 
+### Retweets entre contas de volta na Fila (RESOLVIDO em 2026-09-16)
+
+- A opção de retweet escalonado voltou: posts publicados no X mostram
+  **"Retweetar nas outras contas"** na Fila (escolhe as contas-alvo e o intervalo
+  sorteado entre retweets) e os jobs agendados aparecem abaixo com cancelamento.
+- De volta também `x_api.retweet()` (API oficial v2 `POST /2/users/{id}/retweets`) —
+  exige créditos de API pagos do X; sem créditos o job falha com aviso (HTTP 402).
+- Aviso mantido: amplificar o mesmo post com várias contas pode ser interpretado
+  como *platform manipulation* pelas políticas do X — usar com critério.
+
 ## Status atual
 
 - [x] Containers no ar: `api`, `worker`, `scheduler`, `frontend`, `redis`.

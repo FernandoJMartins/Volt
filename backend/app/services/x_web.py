@@ -31,6 +31,9 @@ SEL = {
     "file_input": 'input[data-testid="fileInput"]',
     "post_button": '[data-testid="tweetButton"]',
     "compose_url": f"{BASE}/compose/post",
+    "retweet": '[data-testid="retweet"]',
+    "retweet_confirm": '[data-testid="retweetConfirm"]',
+    "unretweet": '[data-testid="unretweet"]',
 }
 
 _STATUS_RE = re.compile(r"/status/(\d+)")
@@ -474,6 +477,48 @@ async def publish(page: Page, text: str, media_paths: list[str] | None = None) -
 
 def post_url(username: str, post_id: str) -> str:
     return f"{BASE}/{username}/status/{post_id}"
+
+
+async def retweet(page: Page, tweet_id: str) -> bool:
+    """Retweeta um post abrindo a URL do status e confirmando (best-effort).
+
+    Idempotente: se a conta ja retweetou o post, o menu mostra "Undo Repost"
+    e devolvemos True sem fazer nada — repost duplicado nao e' possivel no X,
+    entao reconhecer o estado atual evita erro falso.
+
+    Levanta em caso de falha (post bloqueado, menu que nao abre etc.); quem
+    chama decide o retry.
+    """
+    await page.goto(f"{BASE}/i/web/status/{tweet_id}", wait_until="domcontentloaded")
+
+    btn = await page.wait_for_selector(SEL["retweet"], timeout=30000)
+    label = (await btn.get_attribute("aria-label")) or ""
+    if "undo" in label.lower() and "repost" in label.lower():
+        return True  # ja era retweet desta conta
+
+    await btn.click()
+    await page.wait_for_selector(f'{SEL["retweet_confirm"]}, {SEL["unretweet"]}', timeout=10000)
+    if await page.query_selector(SEL["unretweet"]):
+        # Menu de desfazer aberto: ja retweetado (label em outro idioma).
+        await page.keyboard.press("Escape")
+        return True
+
+    await page.click(SEL["retweet_confirm"])
+    # Confirmacao: o botao principal vira "Undo Repost" (checamos o prefixo
+    # "undo" no aria-label pra nao depender do idioma da UI).
+    try:
+        await page.wait_for_function(
+            """() => {
+                const b = document.querySelector('[data-testid="retweet"]');
+                return !!(b && /undo/i.test(b.getAttribute('aria-label') || ''));
+            }""",
+            timeout=20000,
+        )
+    except PWTimeout as exc:
+        raise RuntimeError(
+            "Retweet nao confirmado: botao nao virou 'Undo Repost' apos confirmar"
+        ) from exc
+    return True
 
 
 async def _last_status_id(page: Page) -> str:

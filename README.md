@@ -186,7 +186,8 @@ python -m pytest tests/ -q                         # suite de testes (sem depend
 
 ## Aviso sobre retweets entre contas
 
-O fluxo de retweet escalonado entre as próprias contas (que dependia da API oficial) foi
-removido da interface; o código no backend permanece inativo. Amplificar o mesmo post com
-várias contas pode ser interpretado como *platform manipulation* pelas políticas do X —
-use outras formas de amplificação com critério.
+A opção de retweet escalonado entre as próprias contas voltou para a **Fila** (posts
+publicados no X → "Retweetar nas outras contas"). Ela usa a API oficial v2 do X
+(`POST /2/users/{id}/retweets`) e **exige créditos de API pagos** — sem créditos o job
+falha com aviso (HTTP 402). Amplificar o mesmo post com várias contas pode ser
+interpretado como *platform manipulation* pelas políticas do X — use com critério.

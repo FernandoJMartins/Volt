@@ -138,6 +138,16 @@ export type QueueItem = {
   text: string
 }
 
+export type RetweetJob = {
+  id: number
+  source_tweet_id: string
+  target_account_id: number
+  target_username: string | null
+  scheduled_at: string
+  status: string
+  last_error: string
+}
+
 export type ManualText = {
   id: number
   text: string
@@ -365,6 +375,16 @@ export const api = {
     patch(`/scheduled-posts/${id}`, body),
   publishNow: (id: number) => post(`/scheduled-posts/${id}/publish-now`),
   cancelScheduled: (id: number) => del(`/scheduled-posts/${id}`),
+
+  retweets: () => get<RetweetJob[]>('/retweets'),
+  createRetweets: (body: {
+    source_tweet_id: string
+    target_account_ids: number[]
+    origin_x_account_id?: number | null
+    delay_min_minutes?: number
+    delay_max_minutes?: number
+  }) => post<{ created: number }>('/retweets', body),
+  cancelRetweet: (id: number) => del(`/retweets/${id}`),
 
   analyticsOverview: (accountId?: number) =>
     get<AccountAnalytics[]>(`/analytics/overview${accountId ? `?account_id=${accountId}` : ''}`),

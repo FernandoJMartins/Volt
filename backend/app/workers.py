@@ -524,10 +524,30 @@ async def run_retweet(ctx, job_id: int) -> dict:
             job.status, job.last_error = "failed", "Conta indisponivel"
             await db.commit()
             return {"failed": True}
+        if account.platform != "x":
+            # Retweet e' conceito X-only; jobs pra Threads nao deveriam existir.
+            job.status, job.last_error = "failed", "Retweet e' recurso so' do X"
+            await db.commit()
+            return {"failed": True}
 
         try:
-            token = await _fresh_access_token(db, account)
-            ok = await x_api.retweet(token, account.x_user_id, job.source_tweet_id)
+            if account.auth_method == "browser":
+                # Caminho padrao: navegador com os cookies importados, sem API paga.
+                if not account.session_valid:
+                    raise SessionExpired(f"Conta @{account.username} sem sessao valida. Refaca o login.")
+                driver = platform_web.driver_for(account.platform)
+                async with browser_manager.session(account) as (page, _ctx):
+                    if not await driver.is_logged_in(page):
+                        account.session_valid = False
+                        await db.commit()
+                        raise SessionExpired(f"Conta @{account.username} deslogou. Refaca o login.")
+                    ok = await driver.retweet(page, job.source_tweet_id)
+                await db.commit()  # persiste o storage_state renovado
+            else:
+                token = await _fresh_access_token(db, account)
+                if not token:
+                    raise x_api.XApiError("Conta sem token valido. Reconecte via OAuth.")
+                ok = await x_api.retweet(token, account.x_user_id, job.source_tweet_id)
             job.status = "done" if ok else "failed"
             job.retweet_id = job.source_tweet_id if ok else ""
             db.add(
@@ -554,6 +574,13 @@ async def run_retweet(ctx, job_id: int) -> dict:
             job.status, job.scheduled_at = "queued", reset + timedelta(seconds=30)
             await db.commit()
             return {"rate_limited": True}
+
+        except SessionExpired as exc:
+            # Sessao do navegador expirou: repetir nao adianta ate' o novo login.
+            job.status, job.last_error, job.attempts = "failed", str(exc), job.attempts + 1
+            await db.commit()
+            log.error("Retweet %s: sessao do navegador expirada", job.id)
+            return {"session_expired": True}
 
         except Exception as exc:  # noqa: BLE001
             job.attempts += 1

@@ -159,6 +159,22 @@ async def publish_tweet(access_token: str, text: str, media_ids: list[str] | Non
     return _check(resp)["data"]["id"]
 
 
+async def retweet(access_token: str, user_id: str, tweet_id: str) -> bool:
+    """Retweeta um post pela API oficial v2 (POST /2/users/{id}/retweets).
+
+    Usado pelo fluxo de retweet escalonado entre as proprias contas (Fila).
+    Requer creditos de API pagos do X — sem creditos, o worker marca o job
+    como `failed` (HTTP 402 vira CreditsDepleted).
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{API}/users/{user_id}/retweets",
+            json={"tweet_id": tweet_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    return bool(_check(resp).get("data", {}).get("retweeted"))
+
+
 # ---------------- Upload de midia (API v2; a v1.1 foi descontinuada em 03/2025) ----------------
 
 _CHUNK = 4 * 1024 * 1024  # segmentos devem ficar abaixo de 5MB
